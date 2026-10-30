@@ -54,6 +54,7 @@ export default memo(function Area({
   } = useSelect();
 
   const handleResize = (e, dir) => {
+    if (layout.readOnly) return;
     setResize({ id: data.id, dir: dir });
     setInitDimensions({
       x: data.x,
@@ -266,7 +267,7 @@ export default memo(function Area({
           </div>
         </div>
       </foreignObject>
-      {isHovered && (
+      {isHovered && !layout.readOnly && (
         <>
           <circle
             cx={data.x}

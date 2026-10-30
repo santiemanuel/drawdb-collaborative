@@ -1,3 +1,6 @@
+import { accessRoleChanged } from "../collaboration/access";
+import { useAuth } from "./AuthContext";
+import { useProjectAccess } from "./ProjectAccessContext";
 import {
   createContext,
   useCallback,
@@ -15,32 +18,28 @@ import {
 
 const COLORS = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c"];
 
+// A runtime ID is unique even when a tab is duplicated (sessionStorage is copied).
+const runtimeIdentity = {
+  clientId: nanoid(),
+  displayName: "Visitante",
+  color: COLORS[Math.floor(Math.random() * COLORS.length)],
+};
 function getIdentity() {
-  const stored = sessionStorage.getItem("drawdb-collaboration-identity");
-  if (stored) {
-    try {
-      return JSON.parse(stored);
-    } catch {
-      sessionStorage.removeItem("drawdb-collaboration-identity");
-    }
-  }
-  const suffix = Math.floor(Math.random() * 900 + 100);
-  const identity = {
-    clientId: nanoid(),
-    displayName: `Guest ${suffix}`,
-    color: COLORS[Math.floor(Math.random() * COLORS.length)],
-  };
-  sessionStorage.setItem(
-    "drawdb-collaboration-identity",
-    JSON.stringify(identity),
-  );
-  return identity;
+  return { ...runtimeIdentity };
 }
 
 export const CollabContext = createContext(null);
 
 export default function CollabContextProvider({ children }) {
+  const { user } = useAuth();
+  const { role } = useProjectAccess();
+  const roleRef = useRef(role);
+  roleRef.current = role;
+  const readOnlyRef = useRef(role === "viewer");
+  readOnlyRef.current = role === "viewer";
   const identityRef = useRef(getIdentity());
+  identityRef.current.displayName =
+    user?.name || user?.display_name || "Visitante";
   const socketRef = useRef(null);
   const reconnectRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
@@ -72,6 +71,23 @@ export default function CollabContextProvider({ children }) {
       return;
     }
     if (message.type === MESSAGE_TYPES.JOINED) {
+      if (
+        accessRoleChanged(
+          roleRef.current,
+          message.role,
+          Boolean(sessionRef.current?.shareToken),
+        )
+      ) {
+        readOnlyRef.current = true;
+        sessionRef.current = null;
+        const socket = socketRef.current;
+        socketRef.current = null;
+        socket?.close();
+        setConnectionState(CONNECTION_STATE.DISCONNECTED);
+        window.dispatchEvent(new Event("drawdb-access-changed"));
+        return;
+      }
+      if (message.participant) identityRef.current = message.participant;
       versionRef.current = message.version;
       setConnectionState(CONNECTION_STATE.CONNECTED);
       reconnectAttemptsRef.current = 0;
@@ -190,7 +206,7 @@ export default function CollabContextProvider({ children }) {
       setConnectionState(CONNECTION_STATE.CONNECTING);
       const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
       const socket = new WebSocket(
-        `${scheme}//${window.location.host}/ws/diagrams/${encodeURIComponent(session.diagramId)}`,
+        `${scheme}//${window.location.host}/ws/diagrams/${encodeURIComponent(session.diagramId)}${session.shareToken ? `?share=${encodeURIComponent(session.shareToken)}` : ""}`,
       );
       socketRef.current = socket;
       socket.onopen = () => {
@@ -204,7 +220,7 @@ export default function CollabContextProvider({ children }) {
         );
       };
       socket.onmessage = handleMessage;
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (socketRef.current !== socket) return;
         socketRef.current = null;
         window.clearTimeout(viewportThrottleRef.current.timer);
@@ -213,16 +229,55 @@ export default function CollabContextProvider({ children }) {
         setParticipants([]);
         setRemoteViewports({});
         setRemoteCursors({});
+        for (const pending of pendingRef.current.values())
+          pending.reject(new Error("Conexión cerrada"));
+        pendingRef.current.clear();
+        if ([1008, 4401, 4403].includes(event.code)) {
+          sessionRef.current = null;
+          setConnectionState(CONNECTION_STATE.DISCONNECTED);
+          window.dispatchEvent(new Event("drawdb-access-revoked"));
+          return;
+        }
         setConnectionState(CONNECTION_STATE.CONNECTING);
         const delay = Math.min(
           1000 * 2 ** reconnectAttemptsRef.current,
           15_000,
         );
         reconnectAttemptsRef.current += 1;
-        reconnectRef.current = window.setTimeout(
-          () => openSocket(sessionRef.current),
-          delay,
-        );
+        reconnectRef.current = window.setTimeout(async () => {
+          const current = sessionRef.current;
+          if (!current) return;
+          try {
+            const response = await fetch(
+              `/api/diagrams/${encodeURIComponent(current.diagramId)}${current.shareToken ? `?share=${encodeURIComponent(current.shareToken)}` : ""}`,
+            );
+            if ([401, 403, 404].includes(response.status)) {
+              sessionRef.current = null;
+              setConnectionState(CONNECTION_STATE.DISCONNECTED);
+              window.dispatchEvent(new Event("drawdb-access-revoked"));
+              return;
+            }
+            if (response.ok) {
+              const diagram = await response.json();
+              if (
+                accessRoleChanged(
+                  roleRef.current,
+                  diagram.role,
+                  Boolean(current.shareToken),
+                )
+              ) {
+                readOnlyRef.current = true;
+                sessionRef.current = null;
+                setConnectionState(CONNECTION_STATE.DISCONNECTED);
+                window.dispatchEvent(new Event("drawdb-access-changed"));
+                return;
+              }
+            }
+          } catch {
+            /* A temporary network failure may recover on reconnect. */
+          }
+          if (sessionRef.current === current) openSocket(current);
+        }, delay);
       };
       socket.onerror = () => socket.close();
     },
@@ -230,7 +285,7 @@ export default function CollabContextProvider({ children }) {
   );
 
   const connect = useCallback(
-    ({ diagramId, version, onSnapshot, onDelta }) => {
+    ({ diagramId, version, onSnapshot, onDelta, shareToken, readOnly }) => {
       if (sessionRef.current?.diagramId === diagramId) {
         sessionRef.current.onSnapshot = onSnapshot;
         sessionRef.current.onDelta = onDelta;
@@ -239,7 +294,13 @@ export default function CollabContextProvider({ children }) {
       }
       window.clearTimeout(reconnectRef.current);
       socketRef.current?.close();
-      sessionRef.current = { diagramId, onSnapshot, onDelta };
+      sessionRef.current = {
+        diagramId,
+        onSnapshot,
+        onDelta,
+        shareToken,
+        readOnly,
+      };
       versionRef.current = version;
       setFollowingClientId(null);
       setRemoteViewports({});
@@ -280,6 +341,7 @@ export default function CollabContextProvider({ children }) {
   }, []);
 
   const sendSnapshot = useCallback((name, document) => {
+    if (readOnlyRef.current) return Promise.reject(new Error("Solo lectura"));
     const socket = socketRef.current;
     const session = sessionRef.current;
     if (!session || socket?.readyState !== WebSocket.OPEN) {
@@ -395,6 +457,7 @@ export default function CollabContextProvider({ children }) {
   ]);
 
   const emitDelta = useCallback((delta) => {
+    if (readOnlyRef.current) return;
     if (
       delta?.target !== "table" ||
       delta.action !== "update" ||
@@ -442,6 +505,7 @@ export default function CollabContextProvider({ children }) {
   }, []);
 
   const acquireTableLock = useCallback((tableId) => {
+    if (readOnlyRef.current) return Promise.resolve(false);
     if (heldLocksRef.current.has(tableId)) return Promise.resolve(true);
     const existingRequest = pendingLocksByTableRef.current.get(tableId);
     if (existingRequest) return existingRequest;

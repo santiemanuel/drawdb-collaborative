@@ -1,3 +1,4 @@
+import { useProjectAccess } from "./ProjectAccessContext";
 import { createContext, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { queryConfig } from "../utils/queryConfig";
@@ -15,6 +16,7 @@ const defaultLayout = {
 
 export default function LayoutContextProvider({ children }) {
   const [searchParams] = useSearchParams();
+  const { role } = useProjectAccess();
 
   const hideHeaderParam = searchParams.get(queryConfig.hideHeader.key);
   const hideSidebarParam = searchParams.get(queryConfig.hideSidebar.key);
@@ -35,6 +37,7 @@ export default function LayoutContextProvider({ children }) {
 
   const effectiveLayout = {
     ...layout,
+    readOnly: role === "viewer" || layout.readOnly,
     header: queryConfig.hideHeader.isForced(hideHeaderParam)
       ? false
       : layout.header,

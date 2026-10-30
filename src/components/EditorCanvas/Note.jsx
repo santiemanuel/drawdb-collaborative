@@ -199,10 +199,10 @@ export default memo(function Note({ data, onPointerDown }) {
     textarea.style.height = scrollHeight + "px";
     const newHeight = scrollHeight + 42;
 
-    if (newHeight === data.height) return;
+    if (layout.readOnly || newHeight === data.height) return;
 
     updateNote(data.id, { height: newHeight });
-  }, [data.id, data.height, updateNote]);
+  }, [data.id, data.height, updateNote, layout.readOnly]);
 
   return (
     <g

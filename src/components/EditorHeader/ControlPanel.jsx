@@ -1,3 +1,4 @@
+import { useProjectAccess } from "../../context/ProjectAccessContext";
 import { useContext, useEffect, useMemo, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { Slot } from "../../context/ExtensionsContext";
@@ -133,6 +134,7 @@ export default function ControlPanel({
   onBackToStart,
 }) {
   const { id: diagramId } = useParams();
+  const { projectId, role } = useProjectAccess();
 
   const [modal, setModal] = useState(MODAL.NONE);
   const [sidesheet, setSidesheet] = useState(SIDESHEET.NONE);
@@ -224,6 +226,7 @@ export default function ControlPanel({
   };
 
   const undo = () => {
+    if (layout.readOnly) return;
     if (undoStack.length === 0) return;
     const a = undoStack[undoStack.length - 1];
     setUndoStack((prev) => prev.filter((_, i) => i !== prev.length - 1));
@@ -441,6 +444,7 @@ export default function ControlPanel({
   };
 
   const redo = () => {
+    if (layout.readOnly) return;
     if (redoStack.length === 0) return;
     const a = redoStack[redoStack.length - 1];
     setRedoStack((prev) => prev.filter((e, i) => i !== prev.length - 1));
@@ -657,7 +661,9 @@ export default function ControlPanel({
     }
   };
 
-  const fileImport = () => setModal(MODAL.IMPORT);
+  const fileImport = () => {
+    if (!layout.readOnly) setModal(MODAL.IMPORT);
+  };
   const viewGrid = () =>
     setSettings((prev) => ({ ...prev, showGrid: !prev.showGrid }));
   const snapToGrid = () =>
@@ -841,6 +847,7 @@ export default function ControlPanel({
     Toast.success(t("auto_connect_fk_success", { count: newRels.length }));
   };
   const edit = () => {
+    if (layout.readOnly) return;
     if (selectedElement.element === ObjectType.TABLE) {
       if (!layout.sidebar) {
         setSelectedElement((prev) => ({
@@ -1082,9 +1089,11 @@ export default function ControlPanel({
     del();
   };
   const toggleDBMLEditor = () => {
+    if (layout.readOnly) return;
     setLayout((prev) => ({ ...prev, dbmlEditor: !prev.dbmlEditor }));
   };
   const save = async () => {
+    if (layout.readOnly) return;
     setSaveState(State.SAVING);
   };
   const { cloud, local } = useDiagramList();
@@ -1105,9 +1114,12 @@ export default function ControlPanel({
   }, [cloud, local]);
 
   const open = () => setModal(MODAL.OPEN);
-  const saveDiagramAs = () => setModal(MODAL.SAVEAS);
+  const saveDiagramAs = () => {
+    if (!layout.readOnly) setModal(MODAL.SAVEAS);
+  };
 
   const saveAsCopy = async (newTitle) => {
+    if (layout.readOnly) return;
     const newId = uuidv4();
     const diagramData = {
       diagramId: newId,
@@ -1130,7 +1142,7 @@ export default function ControlPanel({
 
     try {
       const { name, diagramId: id, ...document } = diagramData;
-      await diagramApi.create({ id, name, document });
+      await diagramApi.create({ id, name, document, projectId });
     } catch (err) {
       console.error(err);
       setSaveState(State.ERROR);
@@ -1170,10 +1182,18 @@ export default function ControlPanel({
   const menu = {
     file: {
       new: {
-        function: () => window.open("/editor/templates/blank", "_blank"),
+        function: () =>
+          window.open(
+            `/editor/templates/blank?project=${encodeURIComponent(projectId)}`,
+            "_blank",
+          ),
       },
       new_window: {
-        function: () => window.open("/editor", "_blank"),
+        function: () =>
+          window.open(
+            `/editor?project=${encodeURIComponent(projectId)}`,
+            "_blank",
+          ),
       },
       open: {
         function: open,
@@ -1247,12 +1267,14 @@ export default function ControlPanel({
         disabled: layout.readOnly,
       },
       delete_diagram: {
+        disabled: role !== "owner",
         warning: {
           title: t("delete_diagram"),
           message: t("are_you_sure_delete_diagram"),
         },
         function: async () => {
           try {
+            if (role !== "owner") return;
             await diagramApi.delete(diagramId);
             setTitle("Untitled diagram");
             setTables([]);
@@ -1265,7 +1287,7 @@ export default function ControlPanel({
             setUndoStack([]);
             setRedoStack([]);
             setGistId("");
-            navigate("/editor/templates/blank", { replace: true });
+            navigate(`/projects/${projectId}`, { replace: true });
           } catch {
             Toast.error(t("oops_smth_went_wrong"));
           }

@@ -1,3 +1,4 @@
+import { useProjectAccess } from "../context/ProjectAccessContext";
 import { useState, useEffect, useCallback, useRef, createContext } from "react";
 import { v4 as uuidv4 } from "uuid";
 import ControlPanel from "./EditorHeader/ControlPanel";
@@ -45,6 +46,7 @@ export const IdContext = createContext({
 const SIDEPANEL_MIN_WIDTH = 374;
 
 export default function WorkSpace({ forcedDiagramId } = {}) {
+  const { projectId, role, shareToken } = useProjectAccess();
   const [gistId, setGistId] = useState("");
   const [version, setVersion] = useState("");
   const [title, setTitle] = useState("Untitled Diagram");
@@ -172,6 +174,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
   );
 
   const save = useCallback(async () => {
+    if (role === "viewer" || layout.readOnly) return;
     const isNew = isTemplate || !loadedDiagramId || loadedDiagramId === "blank";
     const targetId = isNew
       ? (pendingNewIdRef.current ??= uuidv4())
@@ -180,6 +183,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
       if (isNew) {
         const created = await diagramApi.create({
           id: targetId,
+          projectId,
           name: title,
           document: buildDocument(),
         });
@@ -204,6 +208,9 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
       setSaveState(State.ERROR);
     }
   }, [
+    projectId,
+    role,
+    layout.readOnly,
     buildDocument,
     title,
     setSaveState,
@@ -240,11 +247,13 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
 
     const loadDiagram = async (id) => {
       try {
-        const diagram = await diagramApi.get(id);
+        const diagram = await diagramApi.get(id, shareToken);
         setLayout((prev) => ({ ...prev, readOnly: false }));
         applyDiagramState(diagram);
         connect({
           diagramId: id,
+          shareToken,
+          readOnly: role === "viewer",
           version: diagram.version,
           onSnapshot: (snapshot) => {
             applyDiagramState(snapshot, { remote: true });
@@ -309,6 +318,8 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
       return;
     }
   }, [
+    role,
+    shareToken,
     applyDiagramState,
     connect,
     disconnect,
@@ -352,13 +363,14 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     )
       return;
 
-    if (settings.autosave) {
+    if (settings.autosave && role !== "viewer") {
       setSaveState(State.SAVING);
     }
   }, [
     undoStack,
     redoStack,
     settings.autosave,
+    role,
     tables?.length,
     areas?.length,
     notes?.length,
@@ -386,6 +398,8 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     saveTimerRef.current = window.setTimeout(save, 600);
     return () => window.clearTimeout(saveTimerRef.current);
   }, [saveState, layout, save]);
+
+  useEffect(() => () => disconnect(), [disconnect]);
 
   useEffect(() => {
     document.title = "Editor | drawDB";

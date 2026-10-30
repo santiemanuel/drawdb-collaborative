@@ -20,14 +20,16 @@ export const diagramApi = {
     const result = await request("/api/diagrams");
     return result.diagrams;
   },
-  get(id) {
-    return request(`/api/diagrams/${encodeURIComponent(id)}`);
+  get(id, shareToken) {
+    return request(
+      `/api/diagrams/${encodeURIComponent(id)}${shareToken ? `?share=${encodeURIComponent(shareToken)}` : ""}`,
+    );
   },
-  create({ id, name, document }) {
+  create({ id, name, document, projectId }) {
     return request("/api/diagrams", {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ id, name, document }),
+      body: JSON.stringify({ id, name, document, projectId }),
     });
   },
   update(id, { name, document, baseVersion }) {
