@@ -23,6 +23,7 @@ export default function ResizeHandles({
   const [hovered, setHovered] = useState(null);
   const latestRef = useRef(null);
   const detachRef = useRef(null);
+  const cancelRef = useRef(null);
   latestRef.current = {
     x,
     width,
@@ -38,10 +39,17 @@ export default function ResizeHandles({
     latestRef.current.onEngagedChange?.(engaged);
   }, [engaged]);
 
-  useEffect(() => () => detachRef.current?.(), []);
+  useEffect(() => {
+    const cancel = () => cancelRef.current?.();
+    window.addEventListener("drawdb:cancel-interaction", cancel);
+    return () => {
+      window.removeEventListener("drawdb:cancel-interaction", cancel);
+      detachRef.current?.();
+    };
+  }, []);
 
   const beginResize = (side) => async (e) => {
-    if (!e.isPrimary) return;
+    if (!e.isPrimary || detachRef.current) return;
     e.stopPropagation();
 
     const from = {
@@ -52,20 +60,27 @@ export default function ResizeHandles({
       zoom: e.currentTarget.ownerSVGElement?.getScreenCTM()?.a || 1,
     };
     let cancelled = false;
-    const cancelPending = () => {
+    const cancelPending = (event) => {
+      if (event && event.pointerId !== from.pointerId) return;
       cancelled = true;
     };
-    window.addEventListener("pointerup", cancelPending, { once: true });
-    window.addEventListener("pointercancel", cancelPending, { once: true });
+    window.addEventListener("pointerup", cancelPending);
+    window.addEventListener("pointercancel", cancelPending);
     detachRef.current = () => {
       cancelled = true;
       window.removeEventListener("pointerup", cancelPending);
       window.removeEventListener("pointercancel", cancelPending);
     };
-    const allowed = beforeResize ? await beforeResize() : true;
-    window.removeEventListener("pointerup", cancelPending);
-    window.removeEventListener("pointercancel", cancelPending);
-    detachRef.current = null;
+    cancelRef.current = () => detachRef.current?.();
+    let allowed = false;
+    try {
+      allowed = beforeResize ? await beforeResize() : true;
+    } finally {
+      window.removeEventListener("pointerup", cancelPending);
+      window.removeEventListener("pointercancel", cancelPending);
+      detachRef.current = null;
+      cancelRef.current = null;
+    }
     if (!allowed) return;
     if (cancelled) {
       latestRef.current.afterResize?.();
@@ -90,14 +105,20 @@ export default function ResizeHandles({
       );
     };
 
-    const stop = (event) => {
+    const stop = (event, cancelled = false) => {
       if (event && event.pointerId !== from.pointerId) return;
 
+      const latest = latestRef.current;
+      if (cancelled) latest.onResize({ x: from.x, width: from.width });
       detachRef.current?.();
       detachRef.current = null;
+      cancelRef.current = null;
       setActive(null);
+      if (cancelled) {
+        setHovered(null);
+        return;
+      }
 
-      const latest = latestRef.current;
       if (from.width === latest.width && from.x === latest.x) return;
       latest.onResizeEnd(
         { x: from.x, width: from.width },
@@ -105,13 +126,15 @@ export default function ResizeHandles({
       );
     };
 
+    const cancel = (event) => stop(event, true);
+    cancelRef.current = () => cancel();
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
+    window.addEventListener("pointercancel", cancel);
     detachRef.current = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("pointercancel", cancel);
       latestRef.current.afterResize?.();
     };
   };

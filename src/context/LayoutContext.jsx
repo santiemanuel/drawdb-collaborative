@@ -1,7 +1,9 @@
 import { useProjectAccess } from "./ProjectAccessContext";
-import { createContext, useState } from "react";
+import { createContext, useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { queryConfig } from "../utils/queryConfig";
+
+import useMobileViewport from "../hooks/useMobileViewport";
 
 export const LayoutContext = createContext(null);
 
@@ -17,6 +19,9 @@ const defaultLayout = {
 export default function LayoutContextProvider({ children }) {
   const [searchParams] = useSearchParams();
   const { role } = useProjectAccess();
+  const isMobile = useMobileViewport();
+  const desktopSidebar = useRef(true);
+  const previousMobile = useRef(isMobile);
 
   const hideHeaderParam = searchParams.get(queryConfig.hideHeader.key);
   const hideSidebarParam = searchParams.get(queryConfig.hideSidebar.key);
@@ -29,11 +34,20 @@ export default function LayoutContextProvider({ children }) {
       : defaultLayout.header,
     sidebar: queryConfig.hideSidebar.isActive(hideSidebarParam)
       ? false
-      : defaultLayout.sidebar,
+      : !isMobile && defaultLayout.sidebar,
     toolbar: queryConfig.hideToolbar.isActive(hideToolbarParam)
       ? false
       : defaultLayout.toolbar,
   });
+
+  useEffect(() => {
+    if (previousMobile.current === isMobile) return;
+    previousMobile.current = isMobile;
+    setLayout((current) => {
+      if (isMobile) desktopSidebar.current = current.sidebar;
+      return { ...current, sidebar: isMobile ? false : desktopSidebar.current };
+    });
+  }, [isMobile]);
 
   const effectiveLayout = {
     ...layout,
@@ -54,6 +68,8 @@ export default function LayoutContextProvider({ children }) {
       value={{
         layout: effectiveLayout,
         setLayout,
+        isMobile,
+        canShowSidebar: !queryConfig.hideSidebar.isForced(hideSidebarParam),
       }}
     >
       {children}

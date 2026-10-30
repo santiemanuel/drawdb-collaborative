@@ -115,10 +115,10 @@ export default memo(function SidePanel({ width, resize, setResize }) {
   };
 
   return (
-    <div className="flex h-full">
+    <div className="editor-side-panel flex h-full">
       <div
         className={`flex flex-col h-full relative ${layout.dbmlEditor ? "" : "pt-2"}`}
-        style={{ width: `${width}px` }}
+        style={{ width: typeof width === "number" ? `${width}px` : width }}
       >
         <div className="h-full flex-1 overflow-y-auto">
           {layout.dbmlEditor ? (

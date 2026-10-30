@@ -28,7 +28,7 @@ export default function Sidesheet({ type, onClose }) {
     <SemiUISideSheet
       visible={type !== SIDESHEET.NONE}
       onCancel={onClose}
-      width={420}
+      width="min(420px, 100vw)"
       title={<div className="text-lg">{getTitle(type)}</div>}
       style={{ paddingBottom: "16px" }}
       bodyStyle={{ padding: "0px" }}

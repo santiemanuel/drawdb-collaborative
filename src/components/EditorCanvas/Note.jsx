@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, useRef, useEffect } from "react";
+import { memo, useMemo, useState, useRef, useEffect, useCallback } from "react";
 import { Action, ObjectType, Tab, State } from "../../data/constants";
 import {
   Input,
@@ -29,9 +29,7 @@ import { noteWidth, noteRadius, noteFold } from "../../data/constants";
 export default memo(function Note({ data, onPointerDown }) {
   const [editField, setEditField] = useState({});
   const [hovered, setHovered] = useState(false);
-  const [resizing, setResizing] = useState(false);
-  const initialWidthRef = useRef(data.width ?? noteWidth);
-  const initialXRef = useRef(data.x);
+  const resizeRef = useRef(null);
   const { layout } = useLayout();
   const { t } = useTranslation();
   const { setSaveState } = useSaveState();
@@ -46,6 +44,86 @@ export default memo(function Note({ data, onPointerDown }) {
     setBulkSelectedElements,
   } = useSelect();
   const initialColorRef = useRef(data.color);
+
+  const latestResizeRef = useRef(null);
+  latestResizeRef.current = { data, updateNote };
+  const releaseResize = useCallback(() => {
+    const resize = resizeRef.current;
+    resizeRef.current = null;
+    if (resize?.target.hasPointerCapture?.(resize.pointerId)) {
+      resize.target.releasePointerCapture(resize.pointerId);
+    }
+    return resize;
+  }, []);
+  const cancelResize = useCallback(
+    (event) => {
+      const resize = resizeRef.current;
+      if (
+        !resize ||
+        (event?.pointerId !== undefined && event.pointerId !== resize.pointerId)
+      )
+        return;
+      releaseResize();
+      const latest = latestResizeRef.current;
+      latest.updateNote(latest.data.id, { width: resize.width, x: resize.x });
+    },
+    [releaseResize],
+  );
+  useEffect(() => {
+    const cancel = () => cancelResize();
+    window.addEventListener("drawdb:cancel-interaction", cancel);
+    return () => {
+      window.removeEventListener("drawdb:cancel-interaction", cancel);
+      releaseResize();
+    };
+  }, [cancelResize, releaseResize]);
+  const beginResize = (side) => (e) => {
+    if (!e.isPrimary || resizeRef.current) return;
+    e.stopPropagation();
+    resizeRef.current = {
+      side,
+      width: data.width ?? noteWidth,
+      x: data.x,
+      clientX: e.clientX,
+      pointerId: e.pointerId,
+      target: e.currentTarget,
+      zoom: transform?.zoom || 1,
+    };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const moveResize = (e) => {
+    const resize = resizeRef.current;
+    if (!resize || e.pointerId !== resize.pointerId) return;
+    const delta = (e.clientX - resize.clientX) / resize.zoom;
+    const width = Math.max(
+      120,
+      resize.width + (resize.side === "left" ? -delta : delta),
+    );
+    updateNote(data.id, {
+      width,
+      x: resize.side === "left" ? resize.x + resize.width - width : resize.x,
+    });
+  };
+  const endResize = (e) => {
+    if (!resizeRef.current || e.pointerId !== resizeRef.current.pointerId)
+      return;
+    const resize = releaseResize();
+    e.stopPropagation();
+    const finalWidth = data.width ?? noteWidth;
+    if (finalWidth === resize.width && data.x === resize.x) return;
+    setUndoStack((prev) => [
+      ...prev,
+      {
+        action: Action.EDIT,
+        element: ObjectType.NOTE,
+        nid: data.id,
+        undo: { width: resize.width, x: resize.x },
+        redo: { width: finalWidth, x: data.x },
+        message: t("edit_note", { noteTitle: data.title, extra: "[width/x]" }),
+      },
+    ]);
+    setRedoStack([]);
+  };
 
   const handleColorPick = (color) => {
     setUndoStack((prev) => {
@@ -188,7 +266,6 @@ export default memo(function Note({ data, onPointerDown }) {
   }, [selectedElement, data, bulkSelectedElements]);
 
   const width = data.width ?? noteWidth;
-  const MIN_NOTE_WIDTH = 120;
 
   useEffect(() => {
     const textarea = document.getElementById(`note_${data.id}`);
@@ -211,7 +288,9 @@ export default memo(function Note({ data, onPointerDown }) {
       onPointerDown={(e) => {
         // Required for onPointerLeave to trigger when a touch pointer leaves
         // https://stackoverflow.com/a/70976017/1137077
-        e.target.releasePointerCapture(e.pointerId);
+        if (e.target.hasPointerCapture?.(e.pointerId)) {
+          e.target.releasePointerCapture(e.pointerId);
+        }
       }}
       onDoubleClick={edit}
     >
@@ -287,54 +366,10 @@ export default memo(function Note({ data, onPointerDown }) {
           fill="transparent"
           stroke="transparent"
           style={{ cursor: "ew-resize" }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            initialWidthRef.current = data.width ?? noteWidth;
-            initialXRef.current = data.x;
-            setResizing(true);
-            e.currentTarget.setPointerCapture?.(e.pointerId);
-          }}
-          onPointerMove={(e) => {
-            if (!resizing) return;
-            const delta = e.movementX / (transform?.zoom || 1);
-            const currentWidth = data.width ?? noteWidth;
-            let proposedWidth = currentWidth - delta;
-            let proposedX = data.x + delta;
-            if (proposedWidth < MIN_NOTE_WIDTH) {
-              const clampDelta = currentWidth - MIN_NOTE_WIDTH;
-              proposedWidth = MIN_NOTE_WIDTH;
-              proposedX = data.x + clampDelta;
-            }
-            if (proposedWidth !== data.width || proposedX !== data.x) {
-              updateNote(data.id, { width: proposedWidth, x: proposedX });
-            }
-          }}
-          onPointerUp={(e) => {
-            if (!resizing) return;
-            setResizing(false);
-            e.stopPropagation();
-            const finalWidth = data.width ?? noteWidth;
-            const finalX = data.x;
-            const startWidth = initialWidthRef.current;
-            const startX = initialXRef.current;
-            if (finalWidth !== startWidth || finalX !== startX) {
-              setUndoStack((prev) => [
-                ...prev,
-                {
-                  action: Action.EDIT,
-                  element: ObjectType.NOTE,
-                  nid: data.id,
-                  undo: { width: startWidth, x: startX },
-                  redo: { width: finalWidth, x: finalX },
-                  message: t("edit_note", {
-                    noteTitle: data.title,
-                    extra: "[width/x]",
-                  }),
-                },
-              ]);
-              setRedoStack([]);
-            }
-          }}
+          onPointerDown={beginResize("left")}
+          onPointerMove={moveResize}
+          onPointerUp={endResize}
+          onPointerCancel={cancelResize}
         />
       )}
 
@@ -347,47 +382,10 @@ export default memo(function Note({ data, onPointerDown }) {
           fill="transparent"
           stroke="transparent"
           style={{ cursor: "ew-resize" }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            initialWidthRef.current = data.width ?? noteWidth;
-            setResizing(true);
-            e.currentTarget.setPointerCapture?.(e.pointerId);
-          }}
-          onPointerMove={(e) => {
-            if (!resizing) return;
-            const delta = e.movementX / (transform?.zoom || 1);
-            const next = Math.max(
-              MIN_NOTE_WIDTH,
-              (data.width ?? noteWidth) + delta,
-            );
-            if (next !== data.width) {
-              updateNote(data.id, { width: next });
-            }
-          }}
-          onPointerUp={(e) => {
-            if (!resizing) return;
-            setResizing(false);
-            e.stopPropagation();
-            const finalWidth = data.width ?? noteWidth;
-            const startWidth = initialWidthRef.current;
-            if (finalWidth !== startWidth) {
-              setUndoStack((prev) => [
-                ...prev,
-                {
-                  action: Action.EDIT,
-                  element: ObjectType.NOTE,
-                  nid: data.id,
-                  undo: { width: startWidth },
-                  redo: { width: finalWidth },
-                  message: t("edit_note", {
-                    noteTitle: data.title,
-                    extra: "[width]",
-                  }),
-                },
-              ]);
-              setRedoStack([]);
-            }
-          }}
+          onPointerDown={beginResize("right")}
+          onPointerMove={moveResize}
+          onPointerUp={endResize}
+          onPointerCancel={cancelResize}
         />
       )}
       <foreignObject

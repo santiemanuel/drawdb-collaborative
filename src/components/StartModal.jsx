@@ -151,7 +151,7 @@ export default function StartModal({ visible, onStart, onTemplate }) {
       }
     >
       {step === STEP.START && (
-        <div className="grid grid-cols-3 gap-4 place-content-center">
+        <div className="grid grid-cols-3 sm:grid-cols-1 gap-4 place-content-center">
           {startOptions.map((o, i) => (
             <button
               key={o.title}
@@ -190,7 +190,7 @@ export default function StartModal({ visible, onStart, onTemplate }) {
         </div>
       )}
       {step === STEP.DATABASE && (
-        <div className="grid grid-cols-3 gap-4 place-content-center">
+        <div className="grid grid-cols-3 sm:grid-cols-1 gap-4 place-content-center">
           {Object.values(databases).map((x) => (
             <button
               key={x.name}

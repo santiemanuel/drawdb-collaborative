@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  beginNavigation,
+  moveNavigation,
+  touchPoint,
+} from "../../collaboration/touchNavigation";
 import { tableIdsForDrag } from "../../collaboration/dragLocks";
 import { Slot } from "../../context/ExtensionsContext";
 import {
@@ -113,6 +118,26 @@ export default function Canvas() {
   const rightClickPanned = useRef(false);
   const pointerDownActiveRef = useRef(false);
   const dragLockIdsRef = useRef([]);
+  const gestureGeneration = useRef(0);
+  const touches = useRef(new Map());
+  const touchNavigation = useRef(null);
+  const touchNavigating = useRef(false);
+  const latestTransform = useRef(transform);
+  latestTransform.current = transform;
+  const [touchMode, setTouchMode] = useState("navigate");
+  const [touchUsed, setTouchUsed] = useState(false);
+  const editTouchStart = useRef(null);
+  useEffect(
+    () => () => {
+      gestureGeneration.current++;
+      pointerDownActiveRef.current = false;
+      touches.current.clear();
+      if (dragLockIdsRef.current.length)
+        releaseTableLocks(dragLockIdsRef.current);
+      dragLockIdsRef.current = [];
+    },
+    [releaseTableLocks],
+  );
 
   useEffect(() => {
     if (linking) {
@@ -414,8 +439,14 @@ export default function Canvas() {
       id: element.id,
       type,
       grabOffset: {
-        x: pointer.spaces.diagram.x - element.x,
-        y: pointer.spaces.diagram.y - element.y,
+        x:
+          canvasContextValue.coords.toDiagramSpace(
+            touchPoint(e, canvasRef.current.getBoundingClientRect()),
+          ).x - element.x,
+        y:
+          canvasContextValue.coords.toDiagramSpace(
+            touchPoint(e, canvasRef.current.getBoundingClientRect()),
+          ).y - element.y,
       },
     });
   };
@@ -430,10 +461,154 @@ export default function Canvas() {
     return { x, y };
   };
 
+  // Navigation is handled before child SVG controls, so a second finger never
+  // starts a relationship, resize, or another table operation.
+  const cancelInteraction = () => {
+    window.dispatchEvent(new CustomEvent("drawdb:cancel-interaction"));
+    gestureGeneration.current++;
+    pointerDownActiveRef.current = false;
+    const tableUpdates = new Map();
+    bulkSelectedElements.forEach((el) => {
+      if (dragging.id === -1) return;
+      if (el.type === ObjectType.TABLE)
+        tableUpdates.set(el.id, el.initialCoords);
+      if (el.type === ObjectType.AREA) updateArea(el.id, el.initialCoords);
+      if (el.type === ObjectType.NOTE) updateNote(el.id, el.initialCoords);
+      if (el.type === ObjectType.VIEW) updateView(el.id, el.initialCoords);
+    });
+    carriedTablesRef.current.forEach((el) =>
+      tableUpdates.set(el.id, el.initialCoords),
+    );
+    if (tableUpdates.size) updateTables(tableUpdates);
+    if (areaResize.id !== -1) updateArea(areaResize.id, areaInitDimensions);
+    setDragging(notDragging);
+    carriedTablesRef.current = [];
+    setAreaResize({ id: -1, dir: "none" });
+    setLinking(false);
+    setBulkSelectRect((prev) => ({ ...prev, show: false }));
+    setPanning((prev) => ({ ...prev, isPanning: false }));
+    elementPointerDownRef.current = null;
+    if (dragLockIdsRef.current.length)
+      releaseTableLocks(dragLockIdsRef.current);
+    dragLockIdsRef.current = [];
+    pointer.setStyle("default");
+  };
+  const resetTouchBaseline = () => {
+    const bounds = canvasRef.current.getBoundingClientRect();
+    touchNavigation.current = beginNavigation(
+      [...touches.current.values()].slice(0, 2),
+      latestTransform.current,
+      { x: bounds.width, y: bounds.height },
+    );
+  };
+  const captureTouchDown = (e) => {
+    if (e.pointerType !== "touch") return;
+    setTouchUsed(true);
+    if (touches.current.size === 0)
+      editTouchStart.current = { x: e.clientX, y: e.clientY };
+    touches.current.set(
+      e.pointerId,
+      touchPoint(e, canvasRef.current.getBoundingClientRect()),
+    );
+    if (
+      touchMode === "navigate" ||
+      layout.readOnly ||
+      touches.current.size > 1 ||
+      touchNavigating.current
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelInteraction();
+      touchNavigating.current = true;
+      canvasRef.current.setPointerCapture(e.pointerId);
+      resetTouchBaseline();
+    }
+  };
+  const captureTouchMove = (e) => {
+    if (e.pointerType !== "touch" || !touches.current.has(e.pointerId)) return;
+    touches.current.set(
+      e.pointerId,
+      touchPoint(e, canvasRef.current.getBoundingClientRect()),
+    );
+    if (!touchNavigating.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const next = moveNavigation(
+      touchNavigation.current,
+      [...touches.current.values()].slice(0, 2),
+    );
+    if (next) {
+      latestTransform.current = next;
+      setTransform(next);
+    }
+  };
+  const captureTouchEnd = (e) => {
+    if (e.pointerType !== "touch") return;
+    touches.current.delete(e.pointerId);
+    if (!touchNavigating.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (canvasRef.current.hasPointerCapture(e.pointerId))
+      canvasRef.current.releasePointerCapture(e.pointerId);
+    if (touches.current.size) resetTouchBaseline();
+    else {
+      touchNavigating.current = false;
+      touchNavigation.current = null;
+      setSaveState(State.SAVING);
+    }
+  };
+  const handlePointerCancel = (e) => {
+    touches.current.delete(e.pointerId);
+    cancelInteraction();
+    if (touches.current.size) {
+      touchNavigating.current = true;
+      resetTouchBaseline();
+    } else {
+      touchNavigating.current = false;
+      touchNavigation.current = null;
+    }
+  };
+
+  useEventListener(
+    "pointerup",
+    (e) => {
+      if (
+        e.pointerType === "touch" &&
+        touches.current.has(e.pointerId) &&
+        !canvasRef.current?.contains(e.target)
+      ) {
+        handlePointerCancel(e);
+      }
+    },
+    undefined,
+    { capture: true },
+  );
+  useEventListener("blur", () => {
+    if (touches.current.size || pointerDownActiveRef.current)
+      cancelInteraction();
+    touches.current.clear();
+    touchNavigating.current = false;
+    touchNavigation.current = null;
+  });
+
   /**
    * @param {PointerEvent} e
    */
   const handlePointerMove = (e) => {
+    const screenPoint = touchPoint(
+      e,
+      canvasRef.current.getBoundingClientRect(),
+    );
+    const diagramPoint = canvasContextValue.coords.toDiagramSpace(screenPoint);
+    if (
+      e.pointerType === "touch" &&
+      editTouchStart.current &&
+      Math.hypot(
+        e.clientX - editTouchStart.current.x,
+        e.clientY - editTouchStart.current.y,
+      ) < 8
+    )
+      return;
     if (selectedElement.open && !layout.sidebar) return;
 
     if (!e.isPrimary) return;
@@ -444,10 +619,10 @@ export default function Canvas() {
         pan: {
           x:
             panning.panStart.x +
-            (panning.cursorStart.x - pointer.spaces.screen.x) / transform.zoom,
+            (panning.cursorStart.x - screenPoint.x) / transform.zoom,
           y:
             panning.panStart.y +
-            (panning.cursorStart.y - pointer.spaces.screen.y) / transform.zoom,
+            (panning.cursorStart.y - screenPoint.y) / transform.zoom,
         },
       }));
       return;
@@ -458,8 +633,8 @@ export default function Canvas() {
     if (linking) {
       setLinkingLine({
         ...linkingLine,
-        endX: pointer.spaces.diagram.x,
-        endY: pointer.spaces.diagram.y,
+        endX: diagramPoint.x,
+        endY: diagramPoint.y,
       });
       return;
     }
@@ -467,8 +642,8 @@ export default function Canvas() {
     if (isDragging()) {
       const { x: mainElementFinalX, y: mainElementFinalY } =
         coordinatesAfterSnappingToGrid({
-          x: pointer.spaces.diagram.x - dragging.grabOffset.x,
-          y: pointer.spaces.diagram.y - dragging.grabOffset.y,
+          x: diagramPoint.x - dragging.grabOffset.x,
+          y: diagramPoint.y - dragging.grabOffset.y,
         });
 
       const { currentCoords, initialCoords } = bulkSelectedElements.find((el) =>
@@ -520,7 +695,7 @@ export default function Canvas() {
       if (areaResize.dir === "none") return;
       let newDims = { ...areaInitDimensions };
       setPanning((old) => ({ ...old, isPanning: false }));
-      const { x, y } = coordinatesAfterSnappingToGrid(pointer.spaces.diagram);
+      const { x, y } = coordinatesAfterSnappingToGrid(diagramPoint);
 
       switch (areaResize.dir) {
         case "br":
@@ -570,8 +745,8 @@ export default function Canvas() {
     if (bulkSelectRect.show) {
       setBulkSelectRect((prev) => ({
         ...prev,
-        x2: pointer.spaces.diagram.x,
-        y2: pointer.spaces.diagram.y,
+        x2: diagramPoint.x,
+        y2: diagramPoint.y,
       }));
     }
   };
@@ -584,6 +759,7 @@ export default function Canvas() {
     elementPointerDownRef.current = null;
 
     if (!e.isPrimary) return;
+    const generation = ++gestureGeneration.current;
 
     // don't pan if the sidesheet for editing a table is open
     if (
@@ -630,7 +806,11 @@ export default function Canvas() {
             return;
           }
         }
-        if (!pointerDownElement.element.locked && !(e.ctrlKey || e.metaKey)) {
+        if (
+          !layout.readOnly &&
+          !pointerDownElement.element.locked &&
+          !(e.ctrlKey || e.metaKey)
+        ) {
           const tableIds = tableIdsForDrag({
             ...pointerDownElement,
             selection: bulkSelectedElements,
@@ -638,12 +818,16 @@ export default function Canvas() {
             areaIdOf: (table) => resolveAreaId(table, areas),
           });
           if (connectionState === "connected" && tableIds.length > 0) {
-            if (!(await acquireTableLocks(tableIds))) {
-              Toast.warning(t("collaboration_table_lock_unavailable"));
+            const acquired = await acquireTableLocks(tableIds);
+            if (
+              !pointerDownActiveRef.current ||
+              generation !== gestureGeneration.current
+            ) {
+              if (acquired) releaseTableLocks(tableIds);
               return;
             }
-            if (!pointerDownActiveRef.current) {
-              releaseTableLocks(tableIds);
+            if (!acquired) {
+              Toast.warning(t("collaboration_table_lock_unavailable"));
               return;
             }
             dragLockIdsRef.current = tableIds;
@@ -700,6 +884,7 @@ export default function Canvas() {
   const handlePointerUp = (e) => {
     if (!e.isPrimary) return;
     pointerDownActiveRef.current = false;
+    gestureGeneration.current++;
     if (selectedElement.open && !layout.sidebar) return;
 
     if (didDrag()) {
@@ -991,6 +1176,41 @@ export default function Canvas() {
 
   return (
     <div className="grow h-full touch-none" id="canvas">
+      {touchUsed && !layout.readOnly && (
+        <div
+          style={{
+            bottom: layout.toolbar
+              ? "calc(76px + env(safe-area-inset-bottom))"
+              : "calc(12px + env(safe-area-inset-bottom))",
+          }}
+          className="absolute left-1/2 -translate-x-1/2 z-30 flex rounded-xl bg-white dark:bg-zinc-800 shadow-lg border border-zinc-300 p-1 gap-1"
+          role="group"
+          aria-label="Touch interaction mode"
+        >
+          <button
+            type="button"
+            className={`min-h-11 px-4 rounded-lg text-sm ${touchMode === "navigate" ? "bg-blue-600 text-white" : "text-zinc-800 dark:text-white"}`}
+            aria-pressed={touchMode === "navigate"}
+            onClick={() => {
+              cancelInteraction();
+              setTouchMode("navigate");
+            }}
+          >
+            {t("mobile_navigate", { defaultValue: "Navigate" })}
+          </button>
+          <button
+            type="button"
+            className={`min-h-11 px-4 rounded-lg text-sm ${touchMode === "edit" ? "bg-blue-600 text-white" : "text-zinc-800 dark:text-white"}`}
+            aria-pressed={touchMode === "edit"}
+            onClick={() => {
+              cancelInteraction();
+              setTouchMode("edit");
+            }}
+          >
+            {t("mobile_edit", { defaultValue: "Edit objects" })}
+          </button>
+        </div>
+      )}
       <div
         className="w-full h-full"
         style={{
@@ -1001,6 +1221,18 @@ export default function Canvas() {
         <svg
           id="diagram"
           ref={canvasRef}
+          onPointerDownCapture={captureTouchDown}
+          onPointerMoveCapture={captureTouchMove}
+          onPointerUpCapture={captureTouchEnd}
+          onPointerCancel={handlePointerCancel}
+          onLostPointerCapture={(e) => {
+            if (
+              e.target === canvasRef.current &&
+              touchNavigating.current &&
+              touches.current.has(e.pointerId)
+            )
+              handlePointerCancel(e);
+          }}
           onPointerMove={handlePointerMove}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}

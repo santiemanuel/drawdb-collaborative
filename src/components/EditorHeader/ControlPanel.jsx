@@ -2106,7 +2106,7 @@ export default function ControlPanel({
   function toolbar() {
     return (
       <div
-        className="py-1.5 px-3 flex items-center gap-1 rounded-xl select-none overflow-hidden toolbar-theme shadow-lg"
+        className="editor-toolbar py-1.5 px-3 flex items-center gap-1 rounded-xl select-none toolbar-theme shadow-lg"
         style={isRtl(i18n.language) ? { direction: "rtl" } : {}}
       >
         <div className="flex justify-start items-center">
@@ -2114,6 +2114,7 @@ export default function ControlPanel({
           <Divider layout="vertical" margin="8px" />
           <Tooltip content={t("zoom_out")} position="bottom">
             <button
+              aria-label={t("zoom_out")}
               className="py-1 px-2 hover-2 rounded-sm text-lg"
               onClick={() =>
                 setTransform((prev) => ({ ...prev, zoom: prev.zoom / 1.2 }))
@@ -2177,6 +2178,7 @@ export default function ControlPanel({
           </Dropdown>
           <Tooltip content={t("zoom_in")} position="bottom">
             <button
+              aria-label={t("zoom_in")}
               className="py-1 px-2 hover-2 rounded-sm text-lg"
               onClick={() =>
                 setTransform((prev) => ({ ...prev, zoom: prev.zoom * 1.2 }))
@@ -2188,6 +2190,7 @@ export default function ControlPanel({
           <Divider layout="vertical" margin="8px" />
           <Tooltip content={t("undo")} position="bottom">
             <button
+              aria-label={t("undo")}
               className="py-1 px-2 hover-2 rounded-sm flex items-center disabled:opacity-50"
               disabled={undoStack.length === 0 || layout.readOnly}
               onClick={undo}
@@ -2197,6 +2200,7 @@ export default function ControlPanel({
           </Tooltip>
           <Tooltip content={t("redo")} position="bottom">
             <button
+              aria-label={t("redo")}
               className="py-1 px-2 hover-2 rounded-sm flex items-center disabled:opacity-50"
               disabled={redoStack.length === 0 || layout.readOnly}
               onClick={redo}
@@ -2207,6 +2211,7 @@ export default function ControlPanel({
           <Divider layout="vertical" margin="8px" />
           <Tooltip content={t("add_table")} position="bottom">
             <button
+              aria-label={t("add_table")}
               className="flex items-center py-1 px-2 hover-2 rounded-sm disabled:opacity-50"
               onClick={() => addTable()}
               disabled={layout.readOnly}
@@ -2216,6 +2221,7 @@ export default function ControlPanel({
           </Tooltip>
           <Tooltip content={t("add_view")} position="bottom">
             <button
+              aria-label={t("add_view")}
               className="flex items-center py-1 px-2 hover-2 rounded-sm disabled:opacity-50"
               onClick={() => addView()}
               disabled={layout.readOnly}
@@ -2225,6 +2231,7 @@ export default function ControlPanel({
           </Tooltip>
           <Tooltip content={t("add_area")} position="bottom">
             <button
+              aria-label={t("add_area")}
               className="py-1 px-2 hover-2 rounded-sm flex items-center disabled:opacity-50"
               onClick={() => addArea()}
               disabled={layout.readOnly}
@@ -2234,6 +2241,7 @@ export default function ControlPanel({
           </Tooltip>
           <Tooltip content={t("add_note")} position="bottom">
             <button
+              aria-label={t("add_note")}
               className="py-1 px-2 hover-2 rounded-sm flex items-center disabled:opacity-50"
               onClick={() => addNote()}
               disabled={layout.readOnly}
@@ -2244,6 +2252,7 @@ export default function ControlPanel({
           <Divider layout="vertical" margin="8px" />
           <Tooltip content={t("auto_arrange")} position="bottom">
             <button
+              aria-label={t("auto_arrange")}
               className="py-1 px-2 hover-2 rounded-sm text-xl -mt-0.5 disabled:opacity-50"
               onClick={autoArrangeTables}
               disabled={layout.readOnly}
@@ -2254,6 +2263,7 @@ export default function ControlPanel({
           <Divider layout="vertical" margin="8px" />
           <Tooltip content={t("save")} position="bottom">
             <button
+              aria-label={t("save")}
               className="py-1 px-2 hover-2 rounded-sm flex items-center disabled:opacity-50"
               onClick={save}
               disabled={layout.readOnly}
@@ -2264,6 +2274,7 @@ export default function ControlPanel({
           <Divider layout="vertical" margin="8px" />
           <Tooltip content={t("theme")} position="bottom">
             <button
+              aria-label={t("theme")}
               className="py-1 px-2 hover-2 rounded-sm text-xl -mt-0.5"
               onClick={() => {
                 const body = document.body;
@@ -2306,7 +2317,7 @@ export default function ControlPanel({
   function header() {
     return (
       <nav
-        className="flex justify-between pt-1 items-center whitespace-nowrap"
+        className="editor-header flex justify-between pt-1 items-center whitespace-nowrap"
         style={isRtl(i18n.language) ? { direction: "rtl" } : {}}
       >
         <div className="flex justify-start items-center">
@@ -2338,7 +2349,7 @@ export default function ControlPanel({
               )}
               <Slot name="diagram-title-prefix" />
               <div
-                className="text-xl flex items-center gap-1 me-1"
+                className="editor-diagram-title text-xl flex items-center gap-1 me-1"
                 onPointerEnter={(e) => e.isPrimary && setShowEditName(true)}
                 onPointerLeave={(e) => e.isPrimary && setShowEditName(false)}
                 onPointerDown={(e) => {
@@ -2364,7 +2375,7 @@ export default function ControlPanel({
               )}
             </div>
             <div className="flex items-center">
-              <div className="flex justify-start text-md select-none me-2">
+              <div className="editor-menu-row flex justify-start text-md select-none me-2">
                 {Object.keys(menu).map((category) => (
                   <Dropdown
                     key={category}
@@ -2530,7 +2541,7 @@ export default function ControlPanel({
                       </Dropdown.Menu>
                     }
                   >
-                    <div className="px-3 py-1 hover-2 rounded-sm">
+                    <div className="editor-menu-trigger px-3 py-1 hover-2 rounded-sm">
                       {Object.keys(menu[category]).some(
                         (item) =>
                           (menu[category][item].is_new ||

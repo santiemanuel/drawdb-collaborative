@@ -14,6 +14,7 @@ import { db } from "../data/db";
 import { diagramApi } from "../api/diagrams";
 import {
   useLayout,
+  useSelect,
   useSettings,
   useTransform,
   useDiagram,
@@ -29,7 +30,7 @@ import {
 } from "../hooks";
 import FloatingControls from "./FloatingControls";
 import StartModal from "./StartModal";
-import { Button, Modal } from "@douyinfe/semi-ui";
+import { Button, Modal, SideSheet } from "@douyinfe/semi-ui";
 import { IconAlertTriangle } from "@douyinfe/semi-icons";
 import { useTranslation } from "react-i18next";
 import { databases } from "../data/databases";
@@ -63,7 +64,13 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
   const loadedIdRef = useRef(null);
   const saveTimerRef = useRef(null);
   const applyingRemoteRef = useRef(false);
-  const { layout, setLayout } = useLayout();
+  const { layout, setLayout, isMobile, canShowSidebar } = useLayout();
+  const { setSelectedElement } = useSelect();
+  const closeMobileSidebar = () => {
+    // Keep the selection but do not turn a panel edit into a floating sheet.
+    setSelectedElement((current) => ({ ...current, open: false }));
+    setLayout((current) => ({ ...current, sidebar: false }));
+  };
   const { settings } = useSettings();
   const { types, setTypes } = useTypes();
   const { areas, setAreas } = useAreas();
@@ -408,7 +415,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
   }, [load]);
 
   return (
-    <div className="h-full flex flex-col overflow-hidden theme">
+    <div className="editor-workspace h-full flex flex-col overflow-hidden theme">
       <IdContext.Provider value={{ gistId, setGistId, version, setVersion }}>
         <ControlPanel
           title={title}
@@ -420,22 +427,32 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
           onBackToStart={() => setShowSelectDbModal(true)}
         />
       </IdContext.Provider>
+      {isMobile && canShowSidebar && (
+        <button
+          type="button"
+          className="mobile-structure-toggle toolbar-theme"
+          aria-expanded={layout.sidebar}
+          aria-label={t("structure")}
+          onClick={() => {
+            if (layout.sidebar) closeMobileSidebar();
+            else setLayout((current) => ({ ...current, sidebar: true }));
+          }}
+        >
+          <i className="bi bi-layout-sidebar" aria-hidden="true" />{" "}
+          {t("structure")}
+        </button>
+      )}
       <div
-        className="flex h-full overflow-y-auto"
+        className="editor-workspace-content flex flex-1 min-h-0 overflow-hidden"
         onPointerUp={(e) => e.isPrimary && setResize(false)}
         onPointerLeave={(e) => e.isPrimary && setResize(false)}
         onPointerMove={(e) => {
           if (!e.isPrimary) return;
           handleResize(e);
         }}
-        onPointerDown={(e) => {
-          // Required for onPointerLeave to trigger when a touch pointer leaves
-          // https://stackoverflow.com/a/70976017/1137077
-          e.target.releasePointerCapture(e.pointerId);
-        }}
         style={isRtl(i18n.language) ? { direction: "rtl" } : {}}
       >
-        {layout.sidebar && (
+        {layout.sidebar && !isMobile && (
           <SidePanel resize={resize} setResize={setResize} width={width} />
         )}
         <div className="relative flex-1 min-w-0 h-full overflow-hidden">
@@ -449,7 +466,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
           {layout.toolbar && (
             <div
               ref={setToolbarContainer}
-              className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20"
+              className="editor-toolbar-container absolute bottom-4 left-1/2 -translate-x-1/2 z-20"
             />
           )}
           {version && (
@@ -477,6 +494,23 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
         </div>
         <Slot name="right-panel" />
       </div>
+      {isMobile && (
+        <SideSheet
+          visible={layout.sidebar}
+          title={t("structure")}
+          width="min(100vw, 420px)"
+          placement={isRtl(i18n.language) ? "right" : "left"}
+          onCancel={closeMobileSidebar}
+          bodyStyle={{
+            padding: 0,
+            height: "calc(100% - 64px)",
+            overflow: "hidden",
+          }}
+          className="mobile-editor-drawer"
+        >
+          <SidePanel resize={false} setResize={() => {}} width="100%" />
+        </SideSheet>
+      )}
       <StartModal
         visible={showSelectDbModal}
         onStart={(database, option) => {

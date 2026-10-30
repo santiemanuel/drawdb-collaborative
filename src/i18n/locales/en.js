@@ -6,6 +6,8 @@ const english = {
 
 const en = {
   translation: {
+    mobile_navigate: "Navigate",
+    mobile_edit: "Edit objects",
     collaboration_people: "People in this diagram",
     collaboration_you: "You",
     collaboration_follow: "Follow",
