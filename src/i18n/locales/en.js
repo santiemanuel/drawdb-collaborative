@@ -6,6 +6,17 @@ const english = {
 
 const en = {
   translation: {
+    collaboration_people: "People in this diagram",
+    collaboration_you: "You",
+    collaboration_follow: "Follow",
+    collaboration_stop_following: "Stop following",
+    collaboration_follow_person: "Follow {{name}}",
+    collaboration_stop_following_person: "Stop following {{name}}",
+    collaboration_following: "Following {{name}}",
+    collaboration_follow_hint:
+      "Follow someone to see their canvas position and zoom.",
+    collaboration_follow_exit_hint:
+      "Press Escape, move or zoom your canvas to stop following.",
     report_bug: "Report a bug",
     import: "Import",
     inherits: "Inherits",

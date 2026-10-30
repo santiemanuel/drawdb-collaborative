@@ -8,6 +8,10 @@ import {
 } from "react";
 import { nanoid } from "nanoid";
 import { CONNECTION_STATE, MESSAGE_TYPES } from "../collaboration/protocol";
+import {
+  canFollowParticipant,
+  isValidViewport,
+} from "../collaboration/viewport";
 
 const COLORS = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c"];
 
@@ -45,6 +49,7 @@ export default function CollabContextProvider({ children }) {
   const versionRef = useRef(0);
   const isApplyingRemoteRef = useRef(false);
   const cursorSentAtRef = useRef(0);
+  const viewportThrottleRef = useRef({ lastSent: 0, timer: null });
   const previewThrottleRef = useRef(new Map());
   const pendingLocksRef = useRef(new Map());
   const pendingLocksByTableRef = useRef(new Map());
@@ -55,6 +60,8 @@ export default function CollabContextProvider({ children }) {
   );
   const [participants, setParticipants] = useState([]);
   const [remoteCursors, setRemoteCursors] = useState({});
+  const [remoteViewports, setRemoteViewports] = useState({});
+  const [followingClientId, setFollowingClientId] = useState(null);
   const [tableLocks, setTableLocks] = useState({});
 
   const handleMessage = useCallback((event) => {
@@ -99,6 +106,30 @@ export default function CollabContextProvider({ children }) {
     }
     if (message.type === MESSAGE_TYPES.PRESENCE) {
       setParticipants(message.participants || []);
+      setRemoteViewports(
+        Object.fromEntries(
+          (message.participants || [])
+            .filter((participant) => isValidViewport(participant.viewport))
+            .map((participant) => [participant.clientId, participant.viewport]),
+        ),
+      );
+      setRemoteCursors((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([clientId]) =>
+            message.participants?.some((item) => item.clientId === clientId),
+          ),
+        ),
+      );
+      return;
+    }
+    if (
+      message.type === MESSAGE_TYPES.VIEWPORT &&
+      isValidViewport(message.viewport)
+    ) {
+      setRemoteViewports((current) => ({
+        ...current,
+        [message.clientId]: message.viewport,
+      }));
       return;
     }
     if (message.type === MESSAGE_TYPES.TABLE_LOCK_STATE) {
@@ -176,6 +207,12 @@ export default function CollabContextProvider({ children }) {
       socket.onclose = () => {
         if (socketRef.current !== socket) return;
         socketRef.current = null;
+        window.clearTimeout(viewportThrottleRef.current.timer);
+        viewportThrottleRef.current = { lastSent: 0, timer: null };
+        setFollowingClientId(null);
+        setParticipants([]);
+        setRemoteViewports({});
+        setRemoteCursors({});
         setConnectionState(CONNECTION_STATE.CONNECTING);
         const delay = Math.min(
           1000 * 2 ** reconnectAttemptsRef.current,
@@ -204,6 +241,10 @@ export default function CollabContextProvider({ children }) {
       socketRef.current?.close();
       sessionRef.current = { diagramId, onSnapshot, onDelta };
       versionRef.current = version;
+      setFollowingClientId(null);
+      setRemoteViewports({});
+      window.clearTimeout(viewportThrottleRef.current.timer);
+      viewportThrottleRef.current = { lastSent: 0, timer: null };
       setRemoteCursors({});
       setTableLocks({});
       openSocket(sessionRef.current);
@@ -219,6 +260,10 @@ export default function CollabContextProvider({ children }) {
     socket?.close();
     setConnectionState(CONNECTION_STATE.DISCONNECTED);
     setParticipants([]);
+    setFollowingClientId(null);
+    setRemoteViewports({});
+    window.clearTimeout(viewportThrottleRef.current.timer);
+    viewportThrottleRef.current = { lastSent: 0, timer: null };
     setRemoteCursors({});
     setTableLocks({});
     for (const preview of previewThrottleRef.current.values()) {
@@ -281,6 +326,73 @@ export default function CollabContextProvider({ children }) {
       }),
     );
   }, []);
+
+  const emitViewport = useCallback((viewport) => {
+    if (!isValidViewport(viewport)) return;
+    const current = viewportThrottleRef.current;
+    const send = () => {
+      current.timer = null;
+      const socket = socketRef.current;
+      const session = sessionRef.current;
+      if (!session || socket?.readyState !== WebSocket.OPEN) return;
+      current.lastSent = Date.now();
+      socket.send(
+        JSON.stringify({
+          type: MESSAGE_TYPES.VIEWPORT,
+          diagramId: session.diagramId,
+          viewport: current.viewport,
+        }),
+      );
+    };
+    current.viewport = viewport;
+    const remaining = 50 - (Date.now() - current.lastSent);
+    if (remaining <= 0) {
+      window.clearTimeout(current.timer);
+      send();
+    } else if (current.timer === null) {
+      current.timer = window.setTimeout(send, remaining);
+    }
+  }, []);
+
+  const stopFollowing = useCallback(() => setFollowingClientId(null), []);
+  const followParticipant = useCallback(
+    (clientId) => {
+      if (
+        connectionState === CONNECTION_STATE.CONNECTED &&
+        participants.some((item) => item.clientId === clientId) &&
+        isValidViewport(remoteViewports[clientId]) &&
+        canFollowParticipant(
+          identityRef.current.clientId,
+          clientId,
+          remoteViewports,
+        )
+      ) {
+        setFollowingClientId(clientId);
+      }
+    },
+    [connectionState, participants, remoteViewports],
+  );
+
+  useEffect(() => {
+    if (
+      followingClientId &&
+      (connectionState !== CONNECTION_STATE.CONNECTED ||
+        !participants.some((item) => item.clientId === followingClientId) ||
+        !canFollowParticipant(
+          identityRef.current.clientId,
+          followingClientId,
+          remoteViewports,
+        ))
+    ) {
+      stopFollowing();
+    }
+  }, [
+    connectionState,
+    followingClientId,
+    participants,
+    remoteViewports,
+    stopFollowing,
+  ]);
 
   const emitDelta = useCallback((delta) => {
     if (
@@ -467,6 +579,11 @@ export default function CollabContextProvider({ children }) {
       connectionState,
       participants,
       remoteCursors,
+      remoteViewports,
+      followingClientId,
+      followParticipant,
+      stopFollowing,
+      emitViewport,
       tableLocks,
       identity: identityRef.current,
       versionRef,
@@ -493,6 +610,11 @@ export default function CollabContextProvider({ children }) {
       isTableLockedByOther,
       participants,
       remoteCursors,
+      remoteViewports,
+      followingClientId,
+      followParticipant,
+      stopFollowing,
+      emitViewport,
       releaseTableLockRetention,
       releaseTableLocks,
       retainTableLock,

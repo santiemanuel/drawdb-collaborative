@@ -8,6 +8,7 @@ export const MESSAGE_TYPES = Object.freeze({
   RESYNC_REQUIRED: "resync_required",
   PRESENCE: "presence",
   CURSOR: "cursor",
+  VIEWPORT: "viewport",
   TABLE_LOCK_ACQUIRE: "table_lock_acquire",
   TABLE_LOCK_GRANTED: "table_lock_granted",
   TABLE_LOCK_DENIED: "table_lock_denied",

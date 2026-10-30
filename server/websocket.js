@@ -9,6 +9,7 @@ import {
   MESSAGE_TYPES,
 } from "./protocol.js";
 import { createTableLockManager } from "./tableLocks.js";
+import { isValidViewport } from "../src/collaboration/viewport.js";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 
@@ -34,8 +35,11 @@ export function attachCollaborationServer(server, store) {
 
   const broadcastPresence = (diagramId) => {
     const participants = [...(rooms.get(diagramId) || [])]
-      .map((client) => client.participant)
-      .filter(Boolean);
+      .filter((client) => client.participant)
+      .map((client) => ({
+        ...client.participant,
+        viewport: client.viewport ?? null,
+      }));
     broadcast(diagramId, {
       type: MESSAGE_TYPES.PRESENCE,
       diagramId,
@@ -273,6 +277,23 @@ export function attachCollaborationServer(server, store) {
         ) {
           broadcastTableLocks(diagramId);
         }
+        return;
+      }
+
+      if (message.type === MESSAGE_TYPES.VIEWPORT) {
+        if (!isValidViewport(message.viewport)) return;
+        const { x, y, zoom, followingClientId } = message.viewport;
+        socket.viewport = { x, y, zoom, followingClientId };
+        broadcast(
+          diagramId,
+          {
+            type: MESSAGE_TYPES.VIEWPORT,
+            diagramId,
+            clientId: socket.participant.clientId,
+            viewport: socket.viewport,
+          },
+          socket,
+        );
         return;
       }
 

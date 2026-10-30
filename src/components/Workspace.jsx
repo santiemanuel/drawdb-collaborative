@@ -4,6 +4,8 @@ import ControlPanel from "./EditorHeader/ControlPanel";
 import { Slot } from "../context/ExtensionsContext";
 import Canvas from "./EditorCanvas/Canvas";
 import CollaborationCursors from "./CollaborationCursors";
+import CollaborationPanel from "./CollaborationPanel";
+import CollaborationViewport from "./CollaborationViewport";
 import { CanvasContextProvider } from "../context/CanvasContext";
 import SidePanel from "./EditorSidePanel/SidePanel";
 import { DB, State } from "../data/constants";
@@ -79,14 +81,8 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     setSqlHeader,
   } = useDiagram();
   const { undoStack, redoStack, setUndoStack, setRedoStack } = useUndoRedo();
-  const {
-    connect,
-    disconnect,
-    sendSnapshot,
-    connectionState,
-    participants,
-    versionRef,
-  } = useCollab();
+  const { connect, disconnect, sendSnapshot, connectionState, versionRef } =
+    useCollab();
   const { t, i18n } = useTranslation();
   const { id: routeDiagramId } = useParams();
   const loadedDiagramId = forcedDiagramId ?? routeDiagramId;
@@ -430,33 +426,12 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
         )}
         <div className="relative flex-1 min-w-0 h-full overflow-hidden">
           <CanvasContextProvider className="h-full w-full">
+            <CollaborationViewport />
             <Canvas saveState={saveState} setSaveState={setSaveState} />
             <CollaborationCursors />
           </CanvasContextProvider>
           <Slot name="canvas-overlay" />
-          {isDiagram && loadedDiagramId && (
-            <div className="pointer-events-none absolute right-3 top-3 z-40 flex items-center gap-2 rounded-full border border-zinc-200 bg-white/90 px-3 py-1.5 text-xs text-zinc-800 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/90 dark:text-zinc-100">
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  connectionState === "connected"
-                    ? "bg-emerald-500"
-                    : connectionState === "connecting"
-                      ? "bg-amber-500"
-                      : "bg-red-500"
-                }`}
-              />
-              <span>
-                {t(`collaboration_${connectionState}`, connectionState)}
-              </span>
-              {participants.length > 0 && (
-                <span className="text-zinc-600 dark:text-zinc-300">
-                  {t("collaboration_participants", {
-                    count: participants.length,
-                  })}
-                </span>
-              )}
-            </div>
-          )}
+          {isDiagram && loadedDiagramId && <CollaborationPanel />}
           {layout.toolbar && (
             <div
               ref={setToolbarContainer}

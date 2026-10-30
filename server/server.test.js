@@ -137,6 +137,103 @@ function openSocket(url) {
   });
 }
 
+test("camera awareness is room-scoped, validated, transient and available to late joiners", async (t) => {
+  const application = createApplication({ databasePath: ":memory:" });
+  for (const id of ["camera-room", "other-room"]) {
+    application.store.create({ id, name: id, document: { tables: [] } });
+  }
+  await new Promise((resolve) =>
+    application.server.listen(0, "127.0.0.1", resolve),
+  );
+  const base = `ws://127.0.0.1:${application.server.address().port}/ws/diagrams/`;
+  const sockets = [];
+  t.after(() => {
+    sockets.forEach((socket) => socket.terminate());
+    application.websocket.close();
+    application.server.close();
+    application.database.close();
+  });
+  const connect = async (diagramId, clientId) => {
+    const socket = await openSocket(base + diagramId);
+    sockets.push(socket);
+    const joined = waitForMessage(
+      socket,
+      (message) => message.type === "presence",
+    );
+    socket.send(
+      JSON.stringify({
+        type: "join",
+        diagramId,
+        lastVersion: 1,
+        participant: { clientId, displayName: clientId, color: "#2563eb" },
+      }),
+    );
+    return { socket, presence: await joined };
+  };
+  const { socket: presenter } = await connect("camera-room", "presenter");
+  const { socket: viewer } = await connect("camera-room", "viewer");
+  const { socket: outsider } = await connect("other-room", "outsider");
+  const outsideMessages = [];
+  outsider.on("message", (raw) => outsideMessages.push(JSON.parse(raw)));
+  const camera = { x: 100, y: -250, zoom: 1.44, followingClientId: null };
+  const received = waitForMessage(
+    viewer,
+    (message) => message.type === "viewport",
+  );
+  presenter.send(
+    JSON.stringify({
+      type: "viewport",
+      diagramId: "camera-room",
+      clientId: "forged-sender",
+      viewport: { ...camera, extra: "not forwarded" },
+    }),
+  );
+  const update = await received;
+  assert.equal(update.clientId, "presenter");
+  assert.deepEqual(update.viewport, camera);
+
+  // The invalid update must not replace the cached camera in the presence snapshot.
+  presenter.send(
+    JSON.stringify({
+      type: "viewport",
+      diagramId: "camera-room",
+      viewport: { ...camera, zoom: -1 },
+    }),
+  );
+  const pong = waitForMessage(presenter, (message) => message.type === "pong");
+  presenter.send(JSON.stringify({ type: "ping", diagramId: "camera-room" }));
+  await pong;
+  const { socket: late, presence } = await connect("camera-room", "late");
+  assert.deepEqual(
+    presence.participants.find((item) => item.clientId === "presenter")
+      .viewport,
+    camera,
+  );
+  assert.equal(application.store.get("camera-room").version, 1);
+  assert.deepEqual(application.store.get("camera-room").document, {
+    tables: [],
+  });
+  assert.equal(
+    outsideMessages.some((message) => message.type === "viewport"),
+    false,
+  );
+
+  const left = waitForMessage(
+    late,
+    (message) =>
+      message.type === "presence" &&
+      !message.participants.some((item) => item.clientId === "presenter"),
+  );
+  presenter.close();
+  await left;
+  const { presence: rejoined } = await connect("camera-room", "presenter");
+  assert.equal(
+    rejoined.participants.find((item) => item.clientId === "presenter")
+      .viewport,
+    null,
+  );
+});
+
 test("diagram persistence enforces optimistic versions and operation IDs", () => {
   const database = openDatabase(":memory:");
   const store = createDiagramStore(database);

@@ -29,6 +29,7 @@ Key additions include:
 - Centralized diagram storage backed by SQLite
 - Real-time table movement and editing between participants
 - Participant presence and viewport-aware collaborative cursors
+- Follow a participant's canvas position and zoom from the connected people list
 - Optimistic version checks that prevent stale clients from overwriting changes
 - A single-container setup for the frontend, API, WebSocket server, and storage
 
@@ -73,6 +74,13 @@ storage. `DATABASE_PATH` controls the database location and defaults to
 `./data/drawdb.sqlite` outside the container. Diagram URLs use
 `/diagrams/:diagramId`, and everyone opening the same URL joins the same live
 session automatically.
+
+Open the participant count in the top-right corner of a saved diagram and select
+**Follow** next to another participant. Your canvas follows their center position
+and zoom, including their current view when you first join. Choose **Stop
+following**, press **Escape**, or pan/zoom locally to take control again. Following
+ends when the participant disconnects; mutual or indirect follow loops are
+prevented. Camera awareness is transient and does not save a new diagram version.
 
 The application exposes:
 

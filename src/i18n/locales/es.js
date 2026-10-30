@@ -6,6 +6,23 @@ const spanish = {
 
 const es = {
   translation: {
+    collaboration_connected: "Conectado",
+    collaboration_connecting: "Conectando",
+    collaboration_disconnected: "Desconectado",
+    collaboration_participants: "{{count}} participantes",
+    collaboration_participants_one: "{{count}} participante",
+    collaboration_participants_other: "{{count}} participantes",
+    collaboration_people: "Personas en este diagrama",
+    collaboration_you: "Tú",
+    collaboration_follow: "Seguir",
+    collaboration_stop_following: "Dejar de seguir",
+    collaboration_follow_person: "Seguir a {{name}}",
+    collaboration_stop_following_person: "Dejar de seguir a {{name}}",
+    collaboration_following: "Siguiendo a {{name}}",
+    collaboration_follow_hint:
+      "Sigue a alguien para ver su posición y zoom en el canvas.",
+    collaboration_follow_exit_hint:
+      "Pulsa Escape, mueve o haz zoom en tu canvas para dejar de seguir.",
     report_bug: "Reportar error",
     import: "Importar",
     inherits: "Hereda",
