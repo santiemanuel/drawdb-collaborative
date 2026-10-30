@@ -67,47 +67,63 @@ Open `http://localhost:3000`. The single application container serves the
 frontend, diagram API, WebSocket collaboration endpoint, and SQLite storage.
 The Compose configuration persists the database in the `drawdb-data` volume.
 
-### Collaborative self-hosting
+### Accounts, projects, and collaboration
 
-Diagrams are stored centrally in SQLite; IndexedDB is not used for diagram
-storage. `DATABASE_PATH` controls the database location and defaults to
-`./data/drawdb.sqlite` outside the container. Diagram URLs use
-`/diagrams/:diagramId`, and everyone opening the same URL joins the same live
-session automatically.
+This fork stores diagrams centrally in SQLite and now scopes them to private
+projects. Sign in with Google to see owned projects and projects shared with
+your verified email. Owners manage invitations with editor/viewer roles and
+can generate revocable public **read-only** links. Invitation links are copied
+and sent manually; no email provider is required or silently used.
 
-Open the participant count in the top-right corner of a saved diagram and select
-**Follow** next to another participant. Your canvas follows their center position
-and zoom, including their current view when you first join. Choose **Stop
-following**, press **Escape**, or pan/zoom locally to take control again. Following
-ends when the participant disconnects; mutual or indirect follow loops are
-prevented. Camera awareness is transient and does not save a new diagram version.
+The application layer authenticates both REST requests and WebSocket sessions.
+Editors retain realtime editing, participant presence, table locks, and
+optimistic version checks. Viewers cannot save changes. Membership and link
+revocation stop access to subsequent realtime updates as well as fresh requests.
 
-The application exposes:
+**Upgrading an existing deployment:** old diagrams are preserved but not
+assigned automatically. Back up the database, sign in as the intended owner,
+and follow the explicit legacy recovery procedure. An empty dashboard does not
+mean historical records were deleted.
 
-- `GET|POST /api/diagrams`
-- `GET|PUT|DELETE /api/diagrams/:diagramId`
-- `/ws/diagrams/:diagramId` (WebSocket)
+Read the [implementation plan](docs/PROJECTS_IMPLEMENTATION_PLAN.md) and
+[Dokploy rollout and recovery guide](docs/DOKPLOY_ACCOUNTS_ROLLOUT.md) before
+publishing. Production uses `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+`APP_URL=https://erd.code-hello.com`, and the persistent `/data` volume.
+The Google callback is `/auth/google/callback`. Credentials are server-only.
+Missing OAuth configuration never opens protected APIs.
 
-Snapshot saves are debounced and guarded by an optimistic version. Stale
-clients receive the current snapshot instead of silently overwriting it.
-Reconnects send the last known version and converge on the server snapshot.
+Keep any existing external Google/Cloudflare access restriction in place.
+Anonymous shared links require the external gateway to permit their narrowly
+scoped read-only routes; the application does not change that gateway itself.
 
-When running behind a reverse proxy, forward `X-Forwarded-For` and
-`X-Forwarded-Proto`, and allow WebSocket `Upgrade`/`Connection` headers on the
-`/ws` path. The browser derives `ws://` or `wss://` from the current origin, so
-no public hostname or `localhost` value is required in production.
+For local development, copy `.env.sample` settings into your process environment
+(or your environment manager). Set `APP_URL` to the browser's exact origin,
+usually `http://localhost:5173` when using Vite. The development server proxies
+`/auth`, `/api`, and `/ws` to the Node server. Do not use production secrets in
+a development environment.
 
-The collaborative API and WebSocket endpoint use the current origin automatically.
-For optional upstream backend services, set `VITE_BACKEND_URL` and, if needed,
-`VITE_GIST_BACKEND_URL` when starting the container. The Node server exposes
-these public settings through `/config.js` with caching disabled, so changing
-them does not require rebuilding the image:
+`DATABASE_PATH` defaults to `./data/drawdb.sqlite` outside Docker. The Compose
+configuration mounts the named volume at `/data`. Run one application replica
+against this local SQLite store; shared multi-replica state is not implemented.
+Forward WebSocket upgrade headers and the normal HTTPS proxy headers. Public
+non-secret optional upstream URLs can still be set through `VITE_BACKEND_URL`
+and `VITE_GIST_BACKEND_URL`; `/config.js` never includes OAuth secrets.
+
+### Verification
 
 ```bash
-docker build -t drawdb-collaborative .
-docker run -p 3000:3000 -v drawdb-data:/data \
-  -e VITE_BACKEND_URL=https://your-drawdb-server.example.com drawdb-collaborative
+npm run check:server
+npm run test:server
+npm run test:import
+npm run test:collaboration
+npm run lint
+npm run build
 ```
+
+Tests include identity/session handling, REST role enforcement, invitation
+binding, public-link revocation, realtime access changes, document preservation,
+and collaboration version/lock regressions. Live Google sign-in, gateway rules,
+and Dokploy persistence still require deployment checks.
 
 ## Contributing
 
