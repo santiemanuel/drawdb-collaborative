@@ -13,13 +13,27 @@ import { attachCollaborationServer } from "./websocket.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAX_DOCUMENT_BYTES = "2mb";
 
-export function createApplication({ databasePath, staticPath } = {}) {
+export function createApplication({
+  databasePath,
+  staticPath,
+  backendUrl = process.env.VITE_BACKEND_URL || "",
+  gistBackendUrl = process.env.VITE_GIST_BACKEND_URL || "",
+} = {}) {
   const database = openDatabase(databasePath);
   const store = createDiagramStore(database);
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
   app.use(express.json({ limit: MAX_DOCUMENT_BYTES }));
+
+  app.get("/config.js", (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    res
+      .type("application/javascript")
+      .send(
+        `window.__DRAWDB_CONFIG__ = ${JSON.stringify({ backendUrl, gistBackendUrl })};`,
+      );
+  });
 
   const validId = (req, res, next) => {
     if (!DIAGRAM_ID_PATTERN.test(req.params.id || "")) {
@@ -66,11 +80,9 @@ export function createApplication({ databasePath, staticPath } = {}) {
   });
   app.put("/api/diagrams/:id", validId, (req, res) => {
     if (!validPayload(req.body) || !Number.isInteger(req.body.baseVersion)) {
-      res
-        .status(400)
-        .json({
-          error: "A valid name, document, and baseVersion are required",
-        });
+      res.status(400).json({
+        error: "A valid name, document, and baseVersion are required",
+      });
       return;
     }
     const result = store.updateSnapshot({ id: req.params.id, ...req.body });

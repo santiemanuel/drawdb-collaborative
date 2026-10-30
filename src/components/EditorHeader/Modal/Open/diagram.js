@@ -1,5 +1,4 @@
 import { databases } from "../../../../data/databases";
-import i18n from "../../../../i18n/i18n";
 
 const KILOBYTE = 1024;
 const MEGABYTE = 1024 * KILOBYTE;
@@ -14,15 +13,23 @@ export function formatSize(bytes) {
   return `${bytes}B`;
 }
 
-export function databaseName(database) {
-  return databases[database]?.name ?? i18n.t("generic");
+export function databaseName(database, t) {
+  return databases[database]?.name ?? t("generic");
 }
 
-export function ownerLabel(entry, currentUserId) {
+export function isOwnEntry(entry, currentUserId) {
+  return Boolean(
+    entry.owner &&
+      currentUserId &&
+      String(entry.owner.id) === String(currentUserId),
+  );
+}
+
+export function ownerLabel(entry, currentUserId, t) {
   const { owner } = entry;
   if (!owner) return null;
-  if (currentUserId && String(owner.id) === String(currentUserId)) return "You";
-  return owner.username || owner.email || `User ${owner.id}`;
+  if (isOwnEntry(entry, currentUserId)) return t("you");
+  return owner.username || owner.email || t("user_with_id", { id: owner.id });
 }
 
 function toDate(value) {
@@ -50,13 +57,13 @@ export function mergeDiagrams(cloud, local) {
   ];
 }
 
-export function databaseOptions(entries) {
+export function databaseOptions(entries, t) {
   const present = [...new Set(entries.map((entry) => entry.database))];
   return [
-    { value: ALL, label: i18n.t("all_databases") },
+    { value: ALL, label: t("all_databases") },
     ...present.map((database) => ({
       value: database,
-      label: databaseName(database),
+      label: databaseName(database, t),
     })),
   ];
 }

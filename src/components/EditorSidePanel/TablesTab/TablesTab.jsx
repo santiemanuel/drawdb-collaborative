@@ -1,3 +1,4 @@
+import { memo, useContext } from "react";
 import { Collapse, Button } from "@douyinfe/semi-ui";
 import { IconEyeOpened, IconEyeClosed } from "@douyinfe/semi-icons";
 import { IconPlus } from "@douyinfe/semi-icons";
@@ -6,9 +7,11 @@ import {
   useDiagram,
   useSaveState,
   useLayout,
-  useUndoRedo,
   useCollab,
+  useSettings,
 } from "../../../hooks";
+import { DiagramActionsContext } from "../../../context/DiagramContext";
+import { UndoRedoActionsContext } from "../../../context/UndoRedoContext";
 import { Action, ObjectType, State } from "../../../data/constants";
 import { useTranslation } from "react-i18next";
 import { DragHandle } from "../../SortableList/DragHandle";
@@ -65,7 +68,7 @@ export default function TablesTab() {
             items={tables}
             onChange={(newTables) => setTables(newTables)}
             afterChange={() => setSaveState(State.SAVING)}
-            renderItem={(item) => <TableListItem table={item} />}
+            renderItem={renderTableListItem}
           />
         </Collapse>
       )}
@@ -73,10 +76,13 @@ export default function TablesTab() {
   );
 }
 
-function TableListItem({ table }) {
+const renderTableListItem = (table) => <TableListItem table={table} />;
+
+const TableListItem = memo(function TableListItem({ table }) {
   const { layout } = useLayout();
-  const { updateTable } = useDiagram();
-  const { setUndoStack, setRedoStack } = useUndoRedo();
+  const { updateTable } = useContext(DiagramActionsContext);
+  const { setUndoStack, setRedoStack } = useContext(UndoRedoActionsContext);
+  const { settings } = useSettings();
   const { t } = useTranslation();
   const {
     acquireTableLock,
@@ -128,14 +134,22 @@ function TableListItem({ table }) {
         className="relative"
         header={
           <div className="flex items-center justify-between w-full">
-            <div className="flex items-center gap-2 flex-1">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
               <DragHandle
                 readOnly={layout.readOnly || lockedByParticipant}
                 id={table.id}
               />
-              <div className="overflow-hidden text-ellipsis whitespace-nowrap">
+              <div className="overflow-hidden text-ellipsis whitespace-nowrap shrink-0 max-w-[60%]">
                 {table.name}
               </div>
+              {settings.showComments && table.comment && (
+                <div
+                  className="overflow-hidden text-ellipsis whitespace-nowrap min-w-0 flex-1 text-xs font-normal opacity-60"
+                  title={table.comment}
+                >
+                  {table.comment}
+                </div>
+              )}
             </div>
             <Button
               size="small"
@@ -165,4 +179,4 @@ function TableListItem({ table }) {
       </Collapse.Panel>
     </div>
   );
-}
+});

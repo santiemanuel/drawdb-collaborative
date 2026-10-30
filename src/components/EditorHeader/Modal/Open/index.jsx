@@ -45,7 +45,7 @@ export default function Open({ selectedDiagramId, setSelectedDiagramId }) {
   };
 
   const diagrams = useMemo(() => mergeDiagrams(cloud, local), [cloud, local]);
-  const dbOptions = databaseOptions(diagrams);
+  const dbOptions = useMemo(() => databaseOptions(diagrams, t), [diagrams, t]);
   const visible = useMemo(
     () =>
       sortDiagrams(filterDiagrams(diagrams, { query, database, source }), sort),
@@ -100,7 +100,7 @@ export default function Open({ selectedDiagramId, setSelectedDiagramId }) {
           />
         ) : (
           <div className="text-sm text-zinc-500 dark:text-zinc-400 px-1 py-6 text-center">
-            {t("no_diagrams_match")}
+            {t("no_diagrams_match_filters")}
           </div>
         )}
       </div>

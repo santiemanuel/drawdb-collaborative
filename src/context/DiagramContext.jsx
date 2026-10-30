@@ -1,18 +1,21 @@
-import { createContext, useCallback, useState } from "react";
+import { createContext, useCallback, useMemo, useRef, useState } from "react";
 import { Action, DB, ObjectType, defaultBlue } from "../data/constants";
 import { useTransform, useUndoRedo, useSelect, useCollab } from "../hooks";
 import { Toast } from "@douyinfe/semi-ui";
 import { useTranslation } from "react-i18next";
 import { nanoid } from "nanoid";
 import { getRelationshipFields } from "../utils/utils";
+import { cascadePosition } from "../utils/rect";
 
 export const DiagramContext = createContext(null);
+export const DiagramActionsContext = createContext(null);
 
 export default function DiagramContextProvider({ children }) {
   const { t } = useTranslation();
   const [database, setDatabaseRaw] = useState(DB.GENERIC);
   const [tables, setTables] = useState([]);
   const [relationships, setRelationships] = useState([]);
+  const [sqlHeader, setSqlHeaderRaw] = useState("");
   const { transform } = useTransform();
   const { setUndoStack, setRedoStack } = useUndoRedo();
   const { selectedElement, setSelectedElement } = useSelect();
@@ -36,13 +39,27 @@ export default function DiagramContextProvider({ children }) {
     [emitDelta, isApplyingRemoteRef],
   );
 
+  const setSqlHeader = useCallback(
+    (next) => {
+      setSqlHeaderRaw(next);
+      if (!isApplyingRemoteRef?.current) {
+        emitDelta({
+          target: "sqlHeader",
+          action: "update",
+          entityId: "sqlHeader",
+          data: [next],
+        });
+      }
+    },
+    [emitDelta, isApplyingRemoteRef],
+  );
+
   const addTable = (data, addToHistory = true) => {
     const id = nanoid();
     const newTable = {
       id,
       name: `table_${id}`,
-      x: transform.pan.x,
-      y: transform.pan.y,
+      ...cascadePosition(transform.pan, tables),
       locked: false,
       fields: [
         {
@@ -168,6 +185,29 @@ export default function DiagramContextProvider({ children }) {
     }
   };
 
+  const updateTables = (updatesById) => {
+    const permitted = new Map(
+      [...updatesById].filter(
+        ([id]) => !shouldEmit() || !isTableLockedByOther(id),
+      ),
+    );
+    setTables((prev) =>
+      prev.map((t) =>
+        permitted.has(t.id) ? { ...t, ...permitted.get(t.id) } : t,
+      ),
+    );
+    if (shouldEmit()) {
+      permitted.forEach((updatedValues, id) => {
+        emitDelta({
+          target: "table",
+          action: "update",
+          entityId: id,
+          data: [id, updatedValues],
+        });
+      });
+    }
+  };
+
   const updateField = (tid, fid, updatedValues) => {
     if (shouldEmit() && isTableLockedByOther(tid)) return;
     setTables((prev) =>
@@ -263,7 +303,7 @@ export default function DiagramContextProvider({ children }) {
     } else {
       setRelationships((prev) => {
         const temp = prev.slice();
-        temp.splice(data.index, 0, data.relationship || data);
+        temp.splice(data.index ?? temp.length, 0, data.relationship || data);
         return temp;
       });
     }
@@ -333,28 +373,55 @@ export default function DiagramContextProvider({ children }) {
     }
   };
 
+  const latestActionsRef = useRef(null);
+  latestActionsRef.current = {
+    getTables: () => tables,
+    getRelationships: () => relationships,
+    addTable,
+    updateTable,
+    updateTables,
+    updateField,
+    deleteField,
+    deleteTable,
+    addRelationship,
+    deleteRelationship,
+    updateRelationship,
+  };
+
+  const actions = useMemo(
+    () => ({
+      ...Object.fromEntries(
+        Object.keys(latestActionsRef.current).map((name) => [
+          name,
+          (...args) => latestActionsRef.current[name](...args),
+        ]),
+      ),
+      setTables,
+      setRelationships,
+      setDatabase,
+      setSqlHeader,
+    }),
+    [setDatabase, setSqlHeader],
+  );
+
+  const value = useMemo(
+    () => ({
+      ...actions,
+      tables,
+      relationships,
+      database,
+      sqlHeader,
+      tablesCount: tables.length,
+      relationshipsCount: relationships.length,
+    }),
+    [actions, tables, relationships, database, sqlHeader],
+  );
+
   return (
-    <DiagramContext.Provider
-      value={{
-        tables,
-        setTables,
-        addTable,
-        updateTable,
-        updateField,
-        deleteField,
-        deleteTable,
-        relationships,
-        setRelationships,
-        addRelationship,
-        deleteRelationship,
-        updateRelationship,
-        database,
-        setDatabase,
-        tablesCount: tables.length,
-        relationshipsCount: relationships.length,
-      }}
-    >
-      {children}
-    </DiagramContext.Provider>
+    <DiagramActionsContext.Provider value={actions}>
+      <DiagramContext.Provider value={value}>
+        {children}
+      </DiagramContext.Provider>
+    </DiagramActionsContext.Provider>
   );
 }

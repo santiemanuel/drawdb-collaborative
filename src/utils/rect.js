@@ -16,3 +16,35 @@ export function isInsideRect(rect1, rect2) {
     rect1.y + rect1.height < rect2.y + rect2.height
   );
 }
+
+export function cascadePosition(position, occupied, step = 30) {
+  let { x, y } = position;
+  while (
+    occupied.some((o) => Math.abs(o.x - x) < step && Math.abs(o.y - y) < step)
+  ) {
+    x += step;
+    y += step;
+  }
+  return { x, y };
+}
+
+export function findContainingArea(rect, areas) {
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  let best = null;
+  areas.forEach((area) => {
+    if (area.hidden) return;
+    const contains =
+      cx >= area.x &&
+      cx <= area.x + area.width &&
+      cy >= area.y &&
+      cy <= area.y + area.height;
+    if (
+      contains &&
+      (!best || area.width * area.height < best.width * best.height)
+    ) {
+      best = area;
+    }
+  });
+  return best;
+}

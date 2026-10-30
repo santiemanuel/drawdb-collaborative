@@ -1,3 +1,4 @@
+import { appendViews } from "../views";
 import { dbToTypes } from "../../data/datatypes";
 import {
   parseDefault,
@@ -5,7 +6,18 @@ import {
   getFkColumnNames,
 } from "./shared";
 
-export function toOracleSQL(diagram) {
+function oracleDeleteClause(constraint) {
+  switch (String(constraint).toLowerCase()) {
+    case "cascade":
+      return "\nON DELETE CASCADE";
+    case "set null":
+      return "\nON DELETE SET NULL";
+    default:
+      return "";
+  }
+}
+
+function tablesToOracleSQL(diagram) {
   return `${diagram.tables
     .map(
       (table) =>
@@ -31,7 +43,7 @@ export function toOracleSQL(diagram) {
                 !dbToTypes[diagram.database][field.type].hasCheck
                   ? ""
                   : ` CHECK(${field.check})`
-              }${field.comment ? ` -- ${field.comment}` : ""}`,
+              }`,
           )
           .join(",\n")}${
           table.fields.filter((f) => f.primary).length > 0
@@ -40,7 +52,7 @@ export function toOracleSQL(diagram) {
                 .map((f) => `"${f.name}"`)
                 .join(", ")})`
             : ""
-        }${uniqueConstraintClause(table, (s) => `"${s}"`)}\n)${table.comment ? ` -- ${table.comment}` : ""};\n${`\n${table.indices
+        }${uniqueConstraintClause(table, (s) => `"${s}"`)}\n);\n${`\n${table.indices
           .map(
             (i) =>
               `\nCREATE ${i.unique ? "UNIQUE " : ""}INDEX "${i.name}"\nON "${table.name}" (${i.fields
@@ -65,7 +77,11 @@ export function toOracleSQL(diagram) {
         .map((c) => `"${c}"`)
         .join(", ")}) REFERENCES "${endName}" (${endColumns
         .map((c) => `"${c}"`)
-        .join(", ")})\nON UPDATE ${r.updateConstraint.toUpperCase()} ON DELETE ${r.deleteConstraint.toUpperCase()};`;
+        .join(", ")})${oracleDeleteClause(r.deleteConstraint)};`;
     })
     .join("\n")}`;
+}
+
+export function toOracleSQL(diagram) {
+  return appendViews(tablesToOracleSQL(diagram), diagram);
 }

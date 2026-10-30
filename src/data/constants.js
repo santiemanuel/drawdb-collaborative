@@ -1,5 +1,6 @@
 export const defaultBlue = "#175e7a";
 export const defaultNoteTheme = "#fcf7ac";
+export const defaultRelationshipColor = "#808080";
 export const noteWidth = 180;
 export const noteRadius = 3;
 export const noteFold = 24;
@@ -18,12 +19,15 @@ export const otherColor = "text-zinc-500";
 export const dateColor = "text-cyan-500";
 export const tableHeaderHeight = 50;
 export const tableWidth = 220;
+export const minTableWidth = 180;
+export const maxTableWidth = 480;
 export const gridSize = 24;
 export const gridCircleRadius = 0.85;
 export const tableFieldHeight = 36;
 export const tableColorStripHeight = 7;
 export const pngExportPixelRatio = 4;
 export const minAreaSize = 120;
+export const keyboardPanStep = 60;
 
 export const Cardinality = {
   ONE_TO_ONE: "one_to_one",
@@ -46,6 +50,8 @@ export const Tab = {
   NOTES: "4",
   TYPES: "5",
   ENUMS: "6",
+  VIEWS: "7",
+  SQL_HEADER: "8",
 };
 
 export const ObjectType = {
@@ -56,6 +62,8 @@ export const ObjectType = {
   RELATIONSHIP: 4,
   TYPE: 5,
   ENUM: 6,
+  DBML: 7,
+  VIEW: 8,
 };
 
 export const Action = {
@@ -82,11 +90,10 @@ export const MODAL = {
   RENAME: 4,
   OPEN: 5,
   SAVEAS: 6,
-  NEW: 7,
   IMPORT_SRC: 8,
-  TABLE_WIDTH: 9,
   LANGUAGE: 10,
-  CONFIG_CUSTOM_TYPES: 11,
+  CONFIG_CUSTOM_TYPES: 12,
+  IMPORT_DB: 13,
 };
 
 export const STATUS = {

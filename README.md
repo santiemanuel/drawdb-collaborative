@@ -1,17 +1,4 @@
 <div align="center">
-  <sup>Special thanks to:</sup>
-  <br>
-  <a href="https://www.warp.dev/drawdb/" target="_blank">
-    <img alt="Warp sponsorship" width="280" src="https://github.com/user-attachments/assets/c7f141e7-9751-407d-bb0e-d6f2c487b34f">
-    <br>
-    <b>Next-gen AI-powered intelligent terminal for all platforms</b>
-  </a>
-</div>
-
-<br/>
-<br/>
-
-<div align="center">
     <img width="64" alt="drawDB logo" src="./src/assets/icon-dark.png">
     <h1>drawDB Collaborative</h1>
 </div>
@@ -50,7 +37,7 @@ Key additions include:
 ### Local Development
 
 ```bash
-git clone https://github.com/yms2772/drawdb-collaborative.git
+git clone https://github.com/santiemanuel/drawdb-collaborative.git
 cd drawdb-collaborative
 npm install
 npm run dev
@@ -63,7 +50,7 @@ side is needed.
 ### Build
 
 ```bash
-git clone https://github.com/yms2772/drawdb-collaborative.git
+git clone https://github.com/santiemanuel/drawdb-collaborative.git
 cd drawdb-collaborative
 npm install
 npm run build
@@ -102,6 +89,18 @@ When running behind a reverse proxy, forward `X-Forwarded-For` and
 `/ws` path. The browser derives `ws://` or `wss://` from the current origin, so
 no public hostname or `localhost` value is required in production.
 
+The collaborative API and WebSocket endpoint use the current origin automatically.
+For optional upstream backend services, set `VITE_BACKEND_URL` and, if needed,
+`VITE_GIST_BACKEND_URL` when starting the container. The Node server exposes
+these public settings through `/config.js` with caching disabled, so changing
+them does not require rebuilding the image:
+
+```bash
+docker build -t drawdb-collaborative .
+docker run -p 3000:3000 -v drawdb-data:/data \
+  -e VITE_BACKEND_URL=https://your-drawdb-server.example.com drawdb-collaborative
+```
+
 ## Contributing
 
 Please see [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
@@ -117,13 +116,14 @@ If you interact with a deployed, modified version of this application over a
 network, you are entitled to receive the Corresponding Source for that version
 under section 13 of the GNU AGPL. The source for this version is available at:
 
-https://github.com/yms2772/drawdb-collaborative
+https://github.com/santiemanuel/drawdb-collaborative
 
 Copyright and attribution notices from the original project are retained. See
 the repository history for changes made by this fork.
 
 ## Upstream project
 
+- Collaborative upstream: [yms2772/drawdb-collaborative](https://github.com/yms2772/drawdb-collaborative)
 - Original source: [drawdb-io/drawdb](https://github.com/drawdb-io/drawdb)
 - Original project website: [drawdb.app](https://drawdb.app/)
 - Upstream community: [Discord](https://discord.gg/BrjZgNrmR6)

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { tableIdsForDrag } from "../../collaboration/dragLocks";
 import { Slot } from "../../context/ExtensionsContext";
 import {
   Action,
@@ -9,11 +10,13 @@ import {
   gridSize,
   gridCircleRadius,
   minAreaSize,
+  defaultRelationshipColor,
 } from "../../data/constants";
 import { Toast } from "@douyinfe/semi-ui";
-import Table from "./Table";
+import Table, { TableEditSheet } from "./Table";
+import View from "./View";
 import Area from "./Area";
-import Relationship from "./Relationship";
+import Relationship, { RelationshipEditSheet } from "./Relationship";
 import Note from "./Note";
 import {
   useCanvas,
@@ -27,13 +30,38 @@ import {
   useLayout,
   useSaveState,
   useCollab,
+  useViews,
+  useAreaMembership,
 } from "../../hooks";
 import { useTranslation } from "react-i18next";
 import { useEventListener } from "usehooks-ts";
-import { areFieldsCompatible, getTableHeight } from "../../utils/utils";
-import { getRectFromEndpoints, isInsideRect } from "../../utils/rect";
+import {
+  areFieldsCompatible,
+  getRelatedFieldKeysByTable,
+} from "../../utils/utils";
+import {
+  getViewHeight,
+  getViewWidth,
+  resolveViewColumns,
+} from "../../utils/views";
+import {
+  findContainingArea,
+  getRectFromEndpoints,
+  isInsideRect,
+} from "../../utils/rect";
 import { State, noteWidth } from "../../data/constants";
 import { nanoid } from "nanoid";
+
+const noHiddenAreas = {
+  areaHiddenTableIds: new Set(),
+  tableCountByArea: new Map(),
+};
+
+const notDragging = {
+  id: -1,
+  type: ObjectType.NONE,
+  grabOffset: { x: 0, y: 0 },
+};
 
 export default function Canvas() {
   const { t } = useTranslation();
@@ -45,10 +73,11 @@ export default function Canvas() {
     pointer,
   } = canvasContextValue;
 
-  const { tables, updateTable, relationships, addRelationship, database } =
+  const { tables, updateTables, relationships, addRelationship, database } =
     useDiagram();
   const { setSaveState } = useSaveState();
   const { areas, updateArea } = useAreas();
+  const { views, updateView } = useViews();
   const { notes, updateNote } = useNotes();
   const { layout } = useLayout();
   const { settings } = useSettings();
@@ -60,11 +89,6 @@ export default function Canvas() {
     bulkSelectedElements,
     setBulkSelectedElements,
   } = useSelect();
-  const notDragging = {
-    id: -1,
-    type: ObjectType.NONE,
-    grabOffset: { x: 0, y: 0 },
-  };
   const [dragging, setDragging] = useState(notDragging);
   const [linking, setLinking] = useState(false);
   const [linkingLine, setLinkingLine] = useState({
@@ -79,6 +103,7 @@ export default function Canvas() {
   });
   const {
     acquireTableLocks,
+    connectionState,
     emitAwareness,
     isTableLockedByOther,
     releaseTableLocks,
@@ -137,9 +162,63 @@ export default function Canvas() {
     ctrlKey: false,
     metaKey: false,
   });
-  // this is used to store the element that is clicked on
-  // at the moment, and shouldn't be a part of the state
-  let elementPointerDown = null;
+  const elementPointerDownRef = useRef(null);
+  const carriedTablesRef = useRef([]);
+  const handleElementPointerDown = useCallback((element, type) => {
+    elementPointerDownRef.current = { element, type };
+  }, []);
+
+  const tablesById = useMemo(
+    () => new Map(tables.map((table) => [table.id, table])),
+    [tables],
+  );
+
+  const relatedFieldKeysRef = useRef(new Map());
+  const relatedFieldKeysByTable = useMemo(() => {
+    const next = getRelatedFieldKeysByTable(relationships);
+    const prev = relatedFieldKeysRef.current;
+    next.forEach((keys, tableId) => {
+      const old = prev.get(tableId);
+      if (old && old.size === keys.size && [...keys].every((k) => old.has(k))) {
+        next.set(tableId, old);
+      }
+    });
+    relatedFieldKeysRef.current = next;
+    return next;
+  }, [relationships]);
+
+  const selectedTableIds = useMemo(() => {
+    const ids = new Set(
+      bulkSelectedElements
+        .filter((el) => el.type === ObjectType.TABLE)
+        .map((el) => el.id),
+    );
+    if (selectedElement.element === ObjectType.TABLE) {
+      ids.add(selectedElement.id);
+    }
+    return ids;
+  }, [bulkSelectedElements, selectedElement.element, selectedElement.id]);
+
+  const { getTableRect, resolveAreaId, persistInferredAreaIds } =
+    useAreaMembership();
+
+  const { areaHiddenTableIds, tableCountByArea } = useMemo(() => {
+    const hiddenAreaIds = new Set(
+      areas.filter((a) => a.hidden).map((a) => a.id),
+    );
+    if (hiddenAreaIds.size === 0) return noHiddenAreas;
+    const areaHiddenTableIds = new Set();
+    const tableCountByArea = new Map();
+    tables.forEach((table) => {
+      if (!hiddenAreaIds.has(table.areaId)) return;
+      areaHiddenTableIds.add(table.id);
+      tableCountByArea.set(
+        table.areaId,
+        (tableCountByArea.get(table.areaId) ?? 0) + 1,
+      );
+    });
+    return { areaHiddenTableIds, tableCountByArea };
+  }, [areas, tables]);
 
   const isSameElement = (el1, el2) => {
     return el1.id === el2.id && el1.type === el2.type;
@@ -160,7 +239,7 @@ export default function Canvas() {
     };
 
     tables.forEach((table) => {
-      if (table.locked) return;
+      if (table.locked || areaHiddenTableIds.has(table.id)) return;
 
       const element = {
         id: table.id,
@@ -168,24 +247,37 @@ export default function Canvas() {
         currentCoords: { x: table.x, y: table.y },
         initialCoords: { x: table.x, y: table.y },
       };
-      const tableRect = {
-        x: table.x,
-        y: table.y,
-        width: settings.tableWidth,
-        height: getTableHeight(
-          table,
-          settings.tableWidth,
+      if (shouldAddElement(getTableRect(table), element)) {
+        elements.push(element);
+      }
+    });
+
+    views.forEach((view) => {
+      if (view.locked) return;
+
+      const element = {
+        id: view.id,
+        type: ObjectType.VIEW,
+        currentCoords: { x: view.x, y: view.y },
+        initialCoords: { x: view.x, y: view.y },
+      };
+      const viewRect = {
+        x: view.x,
+        y: view.y,
+        width: getViewWidth(view),
+        height: getViewHeight(
+          view,
+          resolveViewColumns(view, tables),
           settings.showComments,
-          relationships,
         ),
       };
-      if (shouldAddElement(tableRect, element)) {
+      if (shouldAddElement(viewRect, element)) {
         elements.push(element);
       }
     });
 
     areas.forEach((area) => {
-      if (area.locked) return;
+      if (area.locked || area.hidden) return;
 
       const element = {
         id: area.id,
@@ -292,9 +384,32 @@ export default function Canvas() {
       return;
     }
 
+    const dragSet = isSelected ? bulkSelectedElements : [elementInBulk];
     if (!isSelected) {
-      setBulkSelectedElements([elementInBulk]);
+      setBulkSelectedElements(dragSet);
     }
+    const draggedAreaIds = new Set(
+      dragSet.filter((el) => el.type === ObjectType.AREA).map((el) => el.id),
+    );
+    const draggedTableIds = new Set(
+      dragSet.filter((el) => el.type === ObjectType.TABLE).map((el) => el.id),
+    );
+    carriedTablesRef.current =
+      draggedAreaIds.size === 0
+        ? []
+        : tables
+            .filter(
+              (table) =>
+                !table.locked &&
+                !draggedTableIds.has(table.id) &&
+                draggedAreaIds.has(resolveAreaId(table, areas)),
+            )
+            .map((table) => ({
+              id: table.id,
+              initialCoords: { x: table.x, y: table.y },
+              currentCoords: { x: table.x, y: table.y },
+            }));
+    if (draggedAreaIds.size > 0) persistInferredAreaIds(areas);
     setDragging({
       id: element.id,
       type,
@@ -356,7 +471,7 @@ export default function Canvas() {
           y: pointer.spaces.diagram.y - dragging.grabOffset.y,
         });
 
-      const { currentCoords } = bulkSelectedElements.find((el) =>
+      const { currentCoords, initialCoords } = bulkSelectedElements.find((el) =>
         isSameElement(el, dragging),
       );
 
@@ -364,13 +479,14 @@ export default function Canvas() {
       const deltaY = mainElementFinalY - currentCoords.y;
 
       const newBulkSelectedElements = [];
+      const tableUpdates = new Map();
       bulkSelectedElements.forEach((el) => {
         const elementFinalCoords = {
           x: el.currentCoords.x + deltaX,
           y: el.currentCoords.y + deltaY,
         };
         if (el.type === ObjectType.TABLE) {
-          updateTable(el.id, { ...elementFinalCoords });
+          tableUpdates.set(el.id, elementFinalCoords);
         }
         if (el.type === ObjectType.AREA) {
           updateArea(el.id, { ...elementFinalCoords });
@@ -378,12 +494,24 @@ export default function Canvas() {
         if (el.type === ObjectType.NOTE) {
           updateNote(el.id, { ...elementFinalCoords });
         }
+        if (el.type === ObjectType.VIEW) {
+          updateView(el.id, { ...elementFinalCoords });
+        }
         newBulkSelectedElements.push({
           ...el,
           currentCoords: elementFinalCoords,
         });
       });
 
+      carriedTablesRef.current.forEach((carried) => {
+        carried.currentCoords = {
+          x: carried.initialCoords.x + mainElementFinalX - initialCoords.x,
+          y: carried.initialCoords.y + mainElementFinalY - initialCoords.y,
+        };
+        tableUpdates.set(carried.id, carried.currentCoords);
+      });
+
+      if (tableUpdates.size > 0) updateTables(tableUpdates);
       setBulkSelectedElements(newBulkSelectedElements);
       return;
     }
@@ -452,11 +580,15 @@ export default function Canvas() {
    * @param {PointerEvent} e
    */
   const handlePointerDown = async (e) => {
+    const elementPointerDown = elementPointerDownRef.current;
+    elementPointerDownRef.current = null;
+
     if (!e.isPrimary) return;
 
     // don't pan if the sidesheet for editing a table is open
     if (
-      selectedElement.element === ObjectType.TABLE &&
+      (selectedElement.element === ObjectType.TABLE ||
+        selectedElement.element === ObjectType.VIEW) &&
       selectedElement.open &&
       !layout.sidebar
     )
@@ -497,25 +629,25 @@ export default function Canvas() {
             });
             return;
           }
-
-          const clickedTableIsSelected = bulkSelectedElements.some(
-            (item) =>
-              item.type === ObjectType.TABLE && item.id === clickedTableId,
-          );
-          const tableIds = clickedTableIsSelected
-            ? bulkSelectedElements
-                .filter((item) => item.type === ObjectType.TABLE)
-                .map((item) => item.id)
-            : [clickedTableId];
-          if (!(await acquireTableLocks(tableIds))) {
-            Toast.warning(t("collaboration_table_lock_unavailable"));
-            return;
+        }
+        if (!pointerDownElement.element.locked && !(e.ctrlKey || e.metaKey)) {
+          const tableIds = tableIdsForDrag({
+            ...pointerDownElement,
+            selection: bulkSelectedElements,
+            tables,
+            areaIdOf: (table) => resolveAreaId(table, areas),
+          });
+          if (connectionState === "connected" && tableIds.length > 0) {
+            if (!(await acquireTableLocks(tableIds))) {
+              Toast.warning(t("collaboration_table_lock_unavailable"));
+              return;
+            }
+            if (!pointerDownActiveRef.current) {
+              releaseTableLocks(tableIds);
+              return;
+            }
+            dragLockIdsRef.current = tableIds;
           }
-          if (!pointerDownActiveRef.current) {
-            releaseTableLocks(tableIds);
-            return;
-          }
-          dragLockIdsRef.current = tableIds;
         }
         handlePointerDownOnElement(e, pointerDownElement);
       }
@@ -547,11 +679,12 @@ export default function Canvas() {
   };
 
   const didResize = (id) => {
+    const area = areas.find((a) => a.id === id);
     return !(
-      areas[id].x === areaInitDimensions.x &&
-      areas[id].y === areaInitDimensions.y &&
-      areas[id].width === areaInitDimensions.width &&
-      areas[id].height === areaInitDimensions.height
+      area.x === areaInitDimensions.x &&
+      area.y === areaInitDimensions.y &&
+      area.width === areaInitDimensions.width &&
+      area.height === areaInitDimensions.height
     );
   };
 
@@ -570,18 +703,65 @@ export default function Canvas() {
     if (selectedElement.open && !layout.sidebar) return;
 
     if (didDrag()) {
+      const movedAreas = bulkSelectedElements.filter(
+        (el) => el.type === ObjectType.AREA,
+      );
+      const movedAreaIds = new Set(movedAreas.map((el) => el.id));
+      const areasAt = (coordsKey) =>
+        areas.map((area) => {
+          const moved = movedAreas.find((el) => el.id === area.id);
+          return moved ? { ...area, ...moved[coordsKey] } : area;
+        });
+      const areasBefore = areasAt("initialCoords");
+      const areasAfter = areasAt("currentCoords");
+
+      const areaChanges = new Map();
+      bulkSelectedElements.forEach((el) => {
+        if (el.type !== ObjectType.TABLE) return;
+        const table = tablesById.get(el.id);
+        const before = resolveAreaId(table, areasBefore, el.initialCoords);
+        if (movedAreaIds.has(before)) return;
+        const after =
+          findContainingArea(getTableRect(table, el.currentCoords), areasAfter)
+            ?.id ?? null;
+        if (after !== before) areaChanges.set(el.id, { before, after });
+      });
+      if (areaChanges.size > 0) {
+        updateTables(
+          new Map(
+            [...areaChanges].map(([id, { after }]) => [id, { areaId: after }]),
+          ),
+        );
+      }
+
       setUndoStack((prev) => [
         ...prev,
         {
           action: Action.MOVE,
           bulk: true,
           message: t("bulk_update"),
-          elements: bulkSelectedElements.map((el) => ({
-            id: el.id,
-            type: el.type,
-            undo: el.initialCoords,
-            redo: el.currentCoords,
-          })),
+          elements: [
+            ...bulkSelectedElements.map((el) => {
+              const change =
+                el.type === ObjectType.TABLE && areaChanges.get(el.id);
+              return {
+                id: el.id,
+                type: el.type,
+                undo: change
+                  ? { ...el.initialCoords, areaId: change.before }
+                  : el.initialCoords,
+                redo: change
+                  ? { ...el.currentCoords, areaId: change.after }
+                  : el.currentCoords,
+              };
+            }),
+            ...carriedTablesRef.current.map((carried) => ({
+              id: carried.id,
+              type: ObjectType.TABLE,
+              undo: carried.initialCoords,
+              redo: carried.currentCoords,
+            })),
+          ],
         },
       ]);
       setRedoStack([]);
@@ -610,6 +790,7 @@ export default function Canvas() {
       dragLockIdsRef.current = [];
       window.setTimeout(() => releaseTableLocks(tableIds), 2_000);
     }
+    carriedTablesRef.current = [];
 
     if (panning.isPanning && didPan()) {
       setSaveState(State.SAVING);
@@ -622,24 +803,56 @@ export default function Canvas() {
     setLinking(false);
 
     if (areaResize.id !== -1 && didResize(areaResize.id)) {
+      const resizedArea = areas.find((a) => a.id === areaResize.id);
+      const areasBefore = areas.map((a) =>
+        a.id === resizedArea.id ? { ...a, ...areaInitDimensions } : a,
+      );
+      const areaChanges = new Map();
+      tables.forEach((table) => {
+        const before = resolveAreaId(table, areasBefore);
+        if (before !== resizedArea.id && before !== null) return;
+        const rect = getTableRect(table);
+        const stillInside =
+          before === resizedArea.id &&
+          findContainingArea(rect, [resizedArea]) !== null;
+        const after = stillInside
+          ? resizedArea.id
+          : findContainingArea(rect, areas)?.id ?? null;
+        if (after !== before) areaChanges.set(table.id, { before, after });
+      });
+      persistInferredAreaIds(areasBefore);
+      if (areaChanges.size > 0) {
+        updateTables(
+          new Map(
+            [...areaChanges].map(([id, { after }]) => [id, { areaId: after }]),
+          ),
+        );
+      }
+      const { x, y, width, height } = resizedArea;
       setUndoStack((prev) => [
         ...prev,
         {
           action: Action.EDIT,
+          bulk: true,
           element: ObjectType.AREA,
-          aid: areaResize.id,
-          undo: {
-            ...areas[areaResize.id],
-            x: areaInitDimensions.x,
-            y: areaInitDimensions.y,
-            width: areaInitDimensions.width,
-            height: areaInitDimensions.height,
-          },
-          redo: areas[areaResize.id],
           message: t("edit_area", {
-            areaName: areas[areaResize.id].name,
+            areaName: resizedArea.name,
             extra: "[resize]",
           }),
+          elements: [
+            {
+              id: resizedArea.id,
+              type: ObjectType.AREA,
+              undo: areaInitDimensions,
+              redo: { x, y, width, height },
+            },
+            ...[...areaChanges].map(([id, { before, after }]) => ({
+              id,
+              type: ObjectType.TABLE,
+              undo: { areaId: before },
+              redo: { areaId: after },
+            })),
+          ],
         },
       ]);
       setRedoStack([]);
@@ -653,11 +866,11 @@ export default function Canvas() {
     });
   };
 
-  const handleGripField = () => {
+  const handleGripField = useCallback(() => {
     setPanning((old) => ({ ...old, isPanning: false }));
     setDragging(notDragging);
     setLinking(true);
-  };
+  }, []);
 
   const getCardinality = (startField, endField) => {
     const startIsUnique = startField.unique || startField.primary;
@@ -719,6 +932,7 @@ export default function Canvas() {
       updateConstraint: Constraint.NONE,
       deleteConstraint: Constraint.NONE,
       name: `fk_${startTableName}_${startField.name}_${endTableName}`,
+      color: defaultRelationshipColor,
       id: nanoid(),
     };
     delete newRelationship.startX;
@@ -765,6 +979,7 @@ export default function Canvas() {
           ...prev,
           pan: {
             ...prev.pan,
+            x: prev.pan.x + e.deltaX / prev.zoom,
             y: prev.pan.y + e.deltaY / prev.zoom,
           },
         }));
@@ -832,32 +1047,47 @@ export default function Canvas() {
             <Area
               key={a.id}
               data={a}
+              tableCount={tableCountByArea.get(a.id) ?? 0}
               setResize={setAreaResize}
               setInitDimensions={setAreaInitDimensions}
-              onPointerDown={() => {
-                elementPointerDown = {
-                  element: a,
-                  type: ObjectType.AREA,
-                };
-              }}
+              onPointerDown={handleElementPointerDown}
             />
           ))}
-          {relationships.map((e) => (
-            <Relationship key={e.id} data={e} />
-          ))}
-          {tables.map((table) => (
-            <Table
-              key={table.id}
-              tableData={table}
-              setHoveredTable={setHoveredTable}
-              handleGripField={handleGripField}
-              setLinkingLine={setLinkingLine}
-              onPointerDown={() => {
-                elementPointerDown = {
-                  element: table,
-                  type: ObjectType.TABLE,
-                };
-              }}
+          {relationships.map((e) =>
+            areaHiddenTableIds.has(e.startTableId) ||
+            areaHiddenTableIds.has(e.endTableId) ? null : (
+              <Relationship
+                key={e.id}
+                data={e}
+                startTable={tablesById.get(e.startTableId)}
+                endTable={tablesById.get(e.endTableId)}
+                startRelatedFieldKeys={relatedFieldKeysByTable.get(
+                  e.startTableId,
+                )}
+                endRelatedFieldKeys={relatedFieldKeysByTable.get(e.endTableId)}
+              />
+            ),
+          )}
+          {tables.map((table) =>
+            areaHiddenTableIds.has(table.id) ? null : (
+              <Table
+                key={table.id}
+                tableData={table}
+                isSelected={selectedTableIds.has(table.id)}
+                database={database}
+                relatedFieldKeys={relatedFieldKeysByTable.get(table.id)}
+                setHoveredTable={setHoveredTable}
+                handleGripField={handleGripField}
+                setLinkingLine={setLinkingLine}
+                onPointerDown={handleElementPointerDown}
+              />
+            ),
+          )}
+          {views.map((view) => (
+            <View
+              key={view.id}
+              viewData={view}
+              onPointerDown={handleElementPointerDown}
             />
           ))}
           {linking && (
@@ -873,12 +1103,7 @@ export default function Canvas() {
             <Note
               key={n.id}
               data={n}
-              onPointerDown={() => {
-                elementPointerDown = {
-                  element: n,
-                  type: ObjectType.NOTE,
-                };
-              }}
+              onPointerDown={handleElementPointerDown}
             />
           ))}
           {bulkSelectRect.show && (
@@ -892,6 +1117,8 @@ export default function Canvas() {
           )}
         </svg>
       </div>
+      <TableEditSheet />
+      <RelationshipEditSheet />
       {settings.showDebugCoordinates && (
         <div className="fixed flex flex-col flex-wrap gap-6 bg-[rgba(var(--semi-grey-1),var(--tw-bg-opacity))]/40 border border-color bottom-4 right-4 p-4 rounded-xl backdrop-blur-xs pointer-events-none select-none">
           <table className="table-auto grow">

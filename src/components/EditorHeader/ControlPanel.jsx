@@ -20,9 +20,11 @@ import {
   Tooltip,
   Spin,
   Tag,
+  Badge,
   Toast,
   Popconfirm,
   Typography,
+  Modal as SemiModal,
 } from "@douyinfe/semi-ui";
 import { toPng, toJpeg, toSvg } from "html-to-image";
 import {
@@ -44,11 +46,17 @@ import {
   IMPORT_FROM,
   noteWidth,
   pngExportPixelRatio,
+  keyboardPanStep,
 } from "../../data/constants";
 import jsPDF from "jspdf";
 import { useHotkeys } from "react-hotkeys-hook";
 import { Validator } from "jsonschema";
-import { areaSchema, noteSchema, tableSchema } from "../../data/schemas";
+import {
+  areaSchema,
+  noteSchema,
+  tableSchema,
+  viewSchema,
+} from "../../data/schemas";
 import { db } from "../../data/db";
 import {
   useLayout,
@@ -62,12 +70,18 @@ import {
   useNotes,
   useAreas,
   useEnums,
+  useViews,
   useFullscreen,
   useNavigateWithParams,
 } from "../../hooks";
 import { enterFullscreen, exitFullscreen } from "../../utils/fullscreen";
 import { dataURItoBlob } from "../../utils/utils";
-import { IconAddArea, IconAddNote, IconAddTable } from "../../icons";
+import {
+  IconAddArea,
+  IconAddNote,
+  IconAddTable,
+  IconAddView,
+} from "../../icons";
 import LayoutDropdown from "./LayoutDropdown";
 import Sidesheet from "./SideSheet/Sidesheet";
 import Modal from "./Modal/Modal";
@@ -80,27 +94,50 @@ import { jsonToDocumentation } from "../../utils/exportAs/documentation";
 import { IdContext } from "../Workspace";
 import { socials } from "../../data/socials";
 import { toDBML } from "../../utils/exportAs/dbml";
+import { applyDiagramPlan } from "../../utils/dbml/applyPlan";
+import { diffDiagram } from "../../utils/dbml/diff";
 import { exportSavedData } from "../../utils/exportSavedData";
 import { diagramApi } from "../../api/diagrams";
 import { nanoid } from "nanoid";
-import { getTableHeight } from "../../utils/utils";
+import {
+  getRelatedFieldKeysByTable,
+  getTableHeight,
+  getTableWidth,
+} from "../../utils/utils";
+import {
+  getViewHeight,
+  getViewWidth,
+  resolveViewColumns,
+} from "../../utils/views";
+import { autoArrange } from "../../utils/autoArrange";
+import { schemaQueries } from "../../utils/importFrom/schemaQuery";
+import { findAutoFKRelationships } from "../../utils/autoRelationships";
 import { deleteFromCache, STORAGE_KEY } from "../../utils/cache";
 import { DateTime } from "luxon";
 import ConfigureCustomTypes from "./ConfigureCustomTypes";
 import { useDiagramList } from "./Modal/Open/hooks/useDiagramList";
 import { mergeDiagrams, sortDiagrams } from "./Modal/Open/diagram";
 
+const EDITOR_HOTKEY = {
+  preventDefault: true,
+  ignoreEventWhen: (e) => Boolean(e.target?.closest?.(".monaco-editor")),
+};
+
 export default function ControlPanel({
   title,
   setTitle,
   lastSaved,
   toolbarContainer,
+  startWith,
+  setStartWith,
+  onBackToStart,
 }) {
   const { id: diagramId } = useParams();
 
   const [modal, setModal] = useState(MODAL.NONE);
   const [sidesheet, setSidesheet] = useState(SIDESHEET.NONE);
   const [showEditName, setShowEditName] = useState(false);
+  const [showAutoConnectModal, setShowAutoConnectModal] = useState(false);
   const [importDb, setImportDb] = useState("");
   const [exportData, setExportData] = useState({
     data: null,
@@ -116,6 +153,29 @@ export default function ControlPanel({
     setModal(modalType);
   };
   const [importFrom, setImportFrom] = useState(IMPORT_FROM.JSON);
+
+  const [openedFromStart, setOpenedFromStart] = useState(false);
+  const [seenMenuTags, setSeenMenuTags] = useState(() => {
+    try {
+      return new Set(
+        JSON.parse(localStorage.getItem("drawdb:seenMenuTags") || "[]"),
+      );
+    } catch {
+      return new Set();
+    }
+  });
+
+  useEffect(() => {
+    if (!startWith) return;
+    if (startWith.importFrom) setImportFrom(startWith.importFrom);
+    setModal(startWith.modal);
+    setOpenedFromStart(true);
+    setStartWith(null);
+  }, [startWith, setStartWith]);
+
+  useEffect(() => {
+    if (modal === MODAL.NONE) setOpenedFromStart(false);
+  }, [modal]);
   const { saveState, setSaveState } = useSaveState();
   const { layout, setLayout } = useLayout();
   const { settings, setSettings } = useSettings();
@@ -133,9 +193,11 @@ export default function ControlPanel({
     deleteRelationship,
     updateRelationship,
     database,
+    sqlHeader,
   } = useDiagram();
   const { enums, setEnums, deleteEnum, addEnum, updateEnum } = useEnums();
   const { types, addType, deleteType, updateType, setTypes } = useTypes();
+  const { views, setViews, addView, updateView, deleteView } = useViews();
   const { notes, setNotes, updateNote, addNote, deleteNote } = useNotes();
   const { areas, setAreas, updateArea, addArea, deleteArea } = useAreas();
   const { undoStack, redoStack, setUndoStack, setRedoStack } = useUndoRedo();
@@ -146,12 +208,33 @@ export default function ControlPanel({
   const isTemplate = useMatch("/editor/templates/:id");
   const navigate = useNavigateWithParams();
 
+  const swapDbmlSnapshot = (entry) => {
+    const current = { tables, relationships, enums };
+    applyDiagramPlan(diffDiagram(current, entry.data.snapshot), {
+      addTable,
+      updateTable,
+      updateField,
+      deleteTable,
+      addRelationship,
+      updateRelationship,
+      deleteRelationship,
+      setEnums,
+    });
+    return { ...entry, data: { snapshot: current } };
+  };
+
   const undo = () => {
     if (undoStack.length === 0) return;
     const a = undoStack[undoStack.length - 1];
     setUndoStack((prev) => prev.filter((_, i) => i !== prev.length - 1));
 
     if (a.bulk) {
+      if (a.element === ObjectType.RELATIONSHIP && a.action === Action.ADD) {
+        const idsToDelete = new Set((a.relationships || []).map((r) => r.id));
+        setRelationships((prev) => prev.filter((r) => !idsToDelete.has(r.id)));
+        setRedoStack((prev) => [...prev, a]);
+        return;
+      }
       for (const element of a.elements) {
         if (element.type === ObjectType.TABLE) {
           updateTable(element.id, element.undo);
@@ -159,9 +242,16 @@ export default function ControlPanel({
           updateArea(element.id, element.undo);
         } else if (element.type === ObjectType.NOTE) {
           updateNote(element.id, element.undo);
+        } else if (element.type === ObjectType.VIEW) {
+          updateView(element.id, element.undo);
         }
       }
       setRedoStack((prev) => [...prev, a]);
+      return;
+    }
+
+    if (a.element === ObjectType.DBML) {
+      setRedoStack((prev) => [...prev, swapDbmlSnapshot(a)]);
       return;
     }
 
@@ -169,7 +259,7 @@ export default function ControlPanel({
       if (a.element === ObjectType.TABLE) {
         deleteTable(a.data.table.id, false);
       } else if (a.element === ObjectType.AREA) {
-        deleteArea(areas[areas.length - 1].id, false);
+        deleteArea(a.data.id, false);
       } else if (a.element === ObjectType.NOTE) {
         deleteNote(notes[notes.length - 1].id, false);
       } else if (a.element === ObjectType.RELATIONSHIP) {
@@ -178,6 +268,8 @@ export default function ControlPanel({
         deleteType(a.data.type.id, false);
       } else if (a.element === ObjectType.ENUM) {
         deleteEnum(a.data.enum.id, false);
+      } else if (a.element === ObjectType.VIEW) {
+        deleteView(a.data.view.id, false);
       }
       setRedoStack((prev) => [...prev, a]);
     } else if (a.action === Action.MOVE) {
@@ -186,10 +278,8 @@ export default function ControlPanel({
         setRedoStack((prev) => [...prev, { ...a, x, y }]);
         updateTable(a.id, { x: a.x, y: a.y });
       } else if (a.element === ObjectType.AREA) {
-        setRedoStack((prev) => [
-          ...prev,
-          { ...a, x: areas[a.id].x, y: areas[a.id].y },
-        ]);
+        const { x, y } = areas.find((area) => area.id === a.id);
+        setRedoStack((prev) => [...prev, { ...a, x, y }]);
         updateArea(a.id, { x: a.x, y: a.y });
       } else if (a.element === ObjectType.NOTE) {
         setRedoStack((prev) => [
@@ -207,11 +297,13 @@ export default function ControlPanel({
       } else if (a.element === ObjectType.NOTE) {
         addNote(a.data, false);
       } else if (a.element === ObjectType.AREA) {
-        addArea(a.data, false);
+        addArea(a.data, false, a.index);
       } else if (a.element === ObjectType.TYPE) {
         addType(a.data, false);
       } else if (a.element === ObjectType.ENUM) {
         addEnum(a.data, false);
+      } else if (a.element === ObjectType.VIEW) {
+        addView(a.data, false);
       }
       setRedoStack((prev) => [...prev, a]);
     } else if (a.action === Action.EDIT) {
@@ -332,6 +424,8 @@ export default function ControlPanel({
             }
           }
         }
+      } else if (a.element === ObjectType.VIEW) {
+        updateView(a.vid, a.undo);
       } else if (a.element === ObjectType.ENUM) {
         updateEnum(a.id, a.undo);
         if (a.updatedFields) {
@@ -352,6 +446,11 @@ export default function ControlPanel({
     setRedoStack((prev) => prev.filter((e, i) => i !== prev.length - 1));
 
     if (a.bulk) {
+      if (a.element === ObjectType.RELATIONSHIP && a.action === Action.ADD) {
+        setRelationships((prev) => [...prev, ...(a.relationships || [])]);
+        setUndoStack((prev) => [...prev, a]);
+        return;
+      }
       for (const element of a.elements) {
         if (element.type === ObjectType.TABLE) {
           updateTable(element.id, element.redo);
@@ -359,9 +458,16 @@ export default function ControlPanel({
           updateArea(element.id, element.redo);
         } else if (element.type === ObjectType.NOTE) {
           updateNote(element.id, element.redo);
+        } else if (element.type === ObjectType.VIEW) {
+          updateView(element.id, element.redo);
         }
       }
       setUndoStack((prev) => [...prev, a]);
+      return;
+    }
+
+    if (a.element === ObjectType.DBML) {
+      setUndoStack((prev) => [...prev, swapDbmlSnapshot(a)]);
       return;
     }
 
@@ -369,7 +475,7 @@ export default function ControlPanel({
       if (a.element === ObjectType.TABLE) {
         addTable(a.data, false);
       } else if (a.element === ObjectType.AREA) {
-        addArea(null, false);
+        addArea(a.data, false);
       } else if (a.element === ObjectType.NOTE) {
         addNote(null, false);
       } else if (a.element === ObjectType.RELATIONSHIP) {
@@ -378,6 +484,8 @@ export default function ControlPanel({
         addType(a.data, false);
       } else if (a.element === ObjectType.ENUM) {
         addEnum(a.data, false);
+      } else if (a.element === ObjectType.VIEW) {
+        addView(a.data, false);
       }
       setUndoStack((prev) => [...prev, a]);
     } else if (a.action === Action.MOVE) {
@@ -386,10 +494,8 @@ export default function ControlPanel({
         setUndoStack((prev) => [...prev, { ...a, x, y }]);
         updateTable(a.id, { x: a.x, y: a.y });
       } else if (a.element === ObjectType.AREA) {
-        setUndoStack((prev) => [
-          ...prev,
-          { ...a, x: areas[a.id].x, y: areas[a.id].y },
-        ]);
+        const { x, y } = areas.find((area) => area.id === a.id);
+        setUndoStack((prev) => [...prev, { ...a, x, y }]);
         updateArea(a.id, { x: a.x, y: a.y });
       } else if (a.element === ObjectType.NOTE) {
         setUndoStack((prev) => [
@@ -411,6 +517,8 @@ export default function ControlPanel({
         deleteType(a.data.type.id, false);
       } else if (a.element === ObjectType.ENUM) {
         deleteEnum(a.data.enum.id, false);
+      } else if (a.element === ObjectType.VIEW) {
+        deleteView(a.data.view.id, false);
       }
       setUndoStack((prev) => [...prev, a]);
     } else if (a.action === Action.EDIT) {
@@ -533,6 +641,8 @@ export default function ControlPanel({
             }
           }
         }
+      } else if (a.element === ObjectType.VIEW) {
+        updateView(a.vid, a.redo);
       } else if (a.element === ObjectType.ENUM) {
         updateEnum(a.id, a.redo);
         if (a.updatedFields) {
@@ -556,6 +666,18 @@ export default function ControlPanel({
     setTransform((prev) => ({ ...prev, zoom: prev.zoom * 1.2 }));
   const zoomOut = () =>
     setTransform((prev) => ({ ...prev, zoom: prev.zoom / 1.2 }));
+  const panBy = (dx, dy) =>
+    setTransform((prev) => ({
+      ...prev,
+      pan: {
+        x: prev.pan.x + dx / prev.zoom,
+        y: prev.pan.y + dy / prev.zoom,
+      },
+    }));
+  const panLeft = () => panBy(-keyboardPanStep, 0);
+  const panRight = () => panBy(keyboardPanStep, 0);
+  const panUp = () => panBy(0, -keyboardPanStep);
+  const panDown = () => panBy(0, keyboardPanStep);
   const viewStrictMode = () => {
     setSettings((prev) => ({ ...prev, strictMode: !prev.strictMode }));
   };
@@ -582,7 +704,8 @@ export default function ControlPanel({
   };
   const resetView = () =>
     setTransform((prev) => ({ ...prev, zoom: 1, pan: { x: 0, y: 0 } }));
-  const fitWindow = () => {
+  const fitWindow = () => fitToView(tables);
+  const fitToView = (tablesToFit) => {
     const canvas = document.getElementById("canvas").getBoundingClientRect();
 
     const minMaxXY = {
@@ -592,18 +715,33 @@ export default function ControlPanel({
       maxY: -Infinity,
     };
 
-    tables.forEach((table) => {
+    const relatedFieldKeysByTable = getRelatedFieldKeysByTable(relationships);
+    tablesToFit.forEach((table) => {
       minMaxXY.minX = Math.min(minMaxXY.minX, table.x);
       minMaxXY.minY = Math.min(minMaxXY.minY, table.y);
-      minMaxXY.maxX = Math.max(minMaxXY.maxX, table.x + settings.tableWidth);
+      minMaxXY.maxX = Math.max(minMaxXY.maxX, table.x + getTableWidth(table));
       minMaxXY.maxY = Math.max(
         minMaxXY.maxY,
         table.y +
           getTableHeight(
             table,
-            settings.tableWidth,
             settings.showComments,
-            relationships,
+            relatedFieldKeysByTable.get(table.id),
+          ),
+      );
+    });
+
+    views.forEach((view) => {
+      minMaxXY.minX = Math.min(minMaxXY.minX, view.x);
+      minMaxXY.minY = Math.min(minMaxXY.minY, view.y);
+      minMaxXY.maxX = Math.max(minMaxXY.maxX, view.x + getViewWidth(view));
+      minMaxXY.maxY = Math.max(
+        minMaxXY.maxY,
+        view.y +
+          getViewHeight(
+            view,
+            resolveViewColumns(view, tables),
+            settings.showComments,
           ),
       );
     });
@@ -643,6 +781,65 @@ export default function ControlPanel({
       pan: { x: centerX, y: centerY },
     }));
   };
+  const autoArrangeTables = () => {
+    const positions = autoArrange(tables, relationships, settings);
+    const positionById = new Map(positions.map((p) => [p.id, p]));
+
+    const elements = [];
+    const arrangedTables = tables.map((table) => {
+      const pos = positionById.get(table.id);
+      if (!pos || (pos.x === table.x && pos.y === table.y)) return table;
+      elements.push({
+        id: table.id,
+        type: ObjectType.TABLE,
+        undo: { x: table.x, y: table.y },
+        redo: { x: pos.x, y: pos.y },
+      });
+      return { ...table, x: pos.x, y: pos.y };
+    });
+
+    if (elements.length === 0) return;
+
+    for (const element of elements) {
+      updateTable(element.id, element.redo);
+    }
+    setUndoStack((prev) => [
+      ...prev,
+      {
+        action: Action.MOVE,
+        bulk: true,
+        message: t("auto_arrange"),
+        elements,
+      },
+    ]);
+    setRedoStack([]);
+    fitToView(arrangedTables);
+  };
+  const autoConnectFKs = () => {
+    if (layout.readOnly) return;
+    setShowAutoConnectModal(true);
+  };
+  const confirmAutoConnectFKs = () => {
+    setShowAutoConnectModal(false);
+    const newRels = findAutoFKRelationships(tables, relationships);
+    if (newRels.length === 0) {
+      Toast.info(t("all_relations_already_connected"));
+      return;
+    }
+    setRelationships((prev) => [...prev, ...newRels]);
+    setUndoStack((prev) => [
+      ...prev,
+      {
+        action: Action.ADD,
+        element: ObjectType.RELATIONSHIP,
+        bulk: true,
+        message: t("auto_connect_fk"),
+        relationships: newRels,
+      },
+    ]);
+    setRedoStack([]);
+    Toast.success(t("auto_connect_fk_success", { count: newRels.length }));
+  };
   const edit = () => {
     if (selectedElement.element === ObjectType.TABLE) {
       if (!layout.sidebar) {
@@ -660,6 +857,20 @@ export default function ControlPanel({
         document
           .getElementById(`scroll_table_${selectedElement.id}`)
           .scrollIntoView({ behavior: "smooth" });
+      }
+    } else if (selectedElement.element === ObjectType.VIEW) {
+      if (!layout.sidebar) {
+        setSelectedElement((prev) => ({ ...prev, open: true }));
+      } else {
+        setSelectedElement((prev) => ({
+          ...prev,
+          open: true,
+          currentTab: Tab.VIEWS,
+        }));
+        if (selectedElement.currentTab !== Tab.VIEWS) return;
+        document
+          .getElementById(`scroll_view_${selectedElement.id}`)
+          ?.scrollIntoView({ behavior: "smooth" });
       }
     } else if (selectedElement.element === ObjectType.AREA) {
       if (layout.sidebar) {
@@ -712,6 +923,9 @@ export default function ControlPanel({
       case ObjectType.AREA:
         deleteArea(selectedElement.id);
         break;
+      case ObjectType.VIEW:
+        deleteView(selectedElement.id);
+        break;
       default:
         break;
     }
@@ -741,14 +955,35 @@ export default function ControlPanel({
           id: notes.length,
         });
         break;
-      case ObjectType.AREA:
+      case ObjectType.AREA: {
+        const copiedArea = areas.find((a) => a.id === selectedElement.id);
         addArea({
-          ...areas[selectedElement.id],
-          x: areas[selectedElement.id].x + 20,
-          y: areas[selectedElement.id].y + 20,
-          id: areas.length,
+          ...copiedArea,
+          x: copiedArea.x + 20,
+          y: copiedArea.y + 20,
+          id: nanoid(),
         });
         break;
+      }
+      case ObjectType.VIEW: {
+        const copiedView = views.find((v) => v.id === selectedElement.id);
+        addView({
+          view: {
+            ...copiedView,
+            x: copiedView.x + 20,
+            y: copiedView.y + 20,
+            id: nanoid(),
+            columns: copiedView.columns.map((c) => ({ ...c, id: nanoid() })),
+            joins: copiedView.joins.map((j) => ({ ...j, id: nanoid() })),
+            conditions: copiedView.conditions.map((c) => ({
+              ...c,
+              id: nanoid(),
+            })),
+          },
+          index: views.length,
+        });
+        break;
+      }
       default:
         break;
     }
@@ -769,7 +1004,16 @@ export default function ControlPanel({
         break;
       case ObjectType.AREA:
         navigator.clipboard
-          .writeText(JSON.stringify({ ...areas[selectedElement.id] }))
+          .writeText(
+            JSON.stringify(areas.find((a) => a.id === selectedElement.id)),
+          )
+          .catch(() => Toast.error(t("oops_smth_went_wrong")));
+        break;
+      case ObjectType.VIEW:
+        navigator.clipboard
+          .writeText(
+            JSON.stringify(views.find((v) => v.id === selectedElement.id)),
+          )
           .catch(() => Toast.error(t("oops_smth_went_wrong")));
         break;
       default:
@@ -788,7 +1032,23 @@ export default function ControlPanel({
         return;
       }
       const v = new Validator();
-      if (v.validate(obj, tableSchema).valid) {
+      if (v.validate(obj, viewSchema).valid) {
+        addView({
+          view: {
+            ...obj,
+            x: obj.x + 20,
+            y: obj.y + 20,
+            id: nanoid(),
+            columns: (obj.columns ?? []).map((c) => ({ ...c, id: nanoid() })),
+            joins: (obj.joins ?? []).map((j) => ({ ...j, id: nanoid() })),
+            conditions: (obj.conditions ?? []).map((c) => ({
+              ...c,
+              id: nanoid(),
+            })),
+          },
+          index: views.length,
+        });
+      } else if (v.validate(obj, tableSchema).valid) {
         addTable({
           table: {
             ...obj,
@@ -802,9 +1062,9 @@ export default function ControlPanel({
           ...obj,
           x: obj.x + 20,
           y: obj.y + 20,
-          id: areas.length,
+          id: nanoid(),
         });
-      } else if (v.validate(obj, noteSchema)) {
+      } else if (v.validate(obj, noteSchema).valid) {
         addNote({
           ...obj,
           x: obj.x + 20,
@@ -860,6 +1120,8 @@ export default function ControlPanel({
       references: relationships,
       notes,
       areas,
+      views,
+      sqlHeader,
       pan: transform.pan,
       zoom: transform.zoom,
       ...(databases[database].hasEnums && { enums }),
@@ -908,7 +1170,7 @@ export default function ControlPanel({
   const menu = {
     file: {
       new: {
-        function: () => setModal(MODAL.NEW),
+        function: () => window.open("/editor/templates/blank", "_blank"),
       },
       new_window: {
         function: () => window.open("/editor", "_blank"),
@@ -966,6 +1228,8 @@ export default function ControlPanel({
               relationships: relationships,
               notes: notes,
               subjectAreas: areas,
+              views: views,
+              sqlHeader: sqlHeader,
               custom: 1,
               templateId: uuidv4(),
               ...(databases[database].hasEnums && { enums: enums }),
@@ -997,6 +1261,7 @@ export default function ControlPanel({
             setNotes([]);
             setTypes([]);
             setEnums([]);
+            setViews([]);
             setUndoStack([]);
             setRedoStack([]);
             setGistId("");
@@ -1087,6 +1352,25 @@ export default function ControlPanel({
         },
         disabled: layout.readOnly,
       },
+      import_from_database: {
+        is_new: true,
+        ...(database === DB.GENERIC && {
+          children: Object.keys(schemaQueries).map((db) => ({
+            function: () => {
+              setModal(MODAL.IMPORT_DB);
+              setImportDb(db);
+            },
+            name: databases[db].name,
+            disabled: layout.readOnly,
+          })),
+        }),
+        function: () => {
+          if (database === DB.GENERIC) return;
+
+          setModal(MODAL.IMPORT_DB);
+        },
+        disabled: layout.readOnly,
+      },
       export_source: {
         ...(database === DB.GENERIC && {
           children: [
@@ -1099,6 +1383,7 @@ export default function ControlPanel({
                   references: relationships,
                   types: types,
                   database: database,
+                  views: views,
                 });
                 setExportData((prev) => ({
                   ...prev,
@@ -1116,6 +1401,7 @@ export default function ControlPanel({
                   references: relationships,
                   types: types,
                   database: database,
+                  views: views,
                 });
                 setExportData((prev) => ({
                   ...prev,
@@ -1133,6 +1419,7 @@ export default function ControlPanel({
                   references: relationships,
                   types: types,
                   database: database,
+                  views: views,
                 });
                 setExportData((prev) => ({
                   ...prev,
@@ -1150,6 +1437,7 @@ export default function ControlPanel({
                   references: relationships,
                   types: types,
                   database: database,
+                  views: views,
                 });
                 setExportData((prev) => ({
                   ...prev,
@@ -1167,6 +1455,7 @@ export default function ControlPanel({
                   references: relationships,
                   types: types,
                   database: database,
+                  views: views,
                 });
                 setExportData((prev) => ({
                   ...prev,
@@ -1185,6 +1474,7 @@ export default function ControlPanel({
                   references: relationships,
                   types: types,
                   database: database,
+                  views: views,
                 });
                 setExportData((prev) => ({
                   ...prev,
@@ -1204,6 +1494,8 @@ export default function ControlPanel({
             types: types,
             database: database,
             enums: enums,
+            views: views,
+            sqlHeader: sqlHeader,
           });
           setExportData((prev) => ({
             ...prev,
@@ -1270,9 +1562,11 @@ export default function ControlPanel({
                   relationships: relationships,
                   notes: notes,
                   subjectAreas: areas,
+                  views: views,
                   database: database,
                   ...(databases[database].hasTypes && { types: types }),
                   ...(databases[database].hasEnums && { enums: enums }),
+                  ...(sqlHeader && { sqlHeader: sqlHeader }),
                   title: title,
                 },
                 null,
@@ -1352,6 +1646,7 @@ export default function ControlPanel({
                 relationships: relationships,
                 notes: notes,
                 subjectAreas: areas,
+                views: views,
                 database: database,
                 title: title,
                 ...(databases[database].hasTypes && { types: types }),
@@ -1397,6 +1692,7 @@ export default function ControlPanel({
           setNotes([]);
           setEnums([]);
           setTypes([]);
+          setViews([]);
           setUndoStack([]);
           setRedoStack([]);
         },
@@ -1429,6 +1725,14 @@ export default function ControlPanel({
       delete: {
         function: del,
         shortcut: "Del",
+        disabled: layout.readOnly,
+      },
+      auto_arrange: {
+        function: autoArrangeTables,
+        disabled: layout.readOnly,
+      },
+      auto_connect_fk: {
+        function: autoConnectFKs,
         disabled: layout.readOnly,
       },
       copy_as_image: {
@@ -1626,10 +1930,6 @@ export default function ControlPanel({
         function: () =>
           setSettings((prev) => ({ ...prev, autosave: !prev.autosave })),
       },
-      table_width: {
-        function: () => setModal(MODAL.TABLE_WIDTH),
-        disabled: layout.readOnly,
-      },
       configure_custom_types: {
         function: () => setModal(MODAL.CONFIG_CUSTOM_TYPES),
         disabled: layout.readOnly,
@@ -1682,36 +1982,32 @@ export default function ControlPanel({
     },
   };
 
-  useHotkeys("mod+i", fileImport, { preventDefault: true });
-  useHotkeys("mod+z", undo, { preventDefault: true });
-  useHotkeys("mod+y", redo, { preventDefault: true });
-  useHotkeys("mod+s", save, { preventDefault: true });
-  useHotkeys("mod+o", open, { preventDefault: true });
-  useHotkeys("mod+e", edit, { preventDefault: true });
-  useHotkeys("mod+d", duplicate, { preventDefault: true });
-  useHotkeys("mod+c", copy, { preventDefault: true });
-  useHotkeys("mod+v", paste, { preventDefault: true });
-  useHotkeys("mod+x", cut, { preventDefault: true });
-  useHotkeys("delete", del, { preventDefault: true });
-  useHotkeys("mod+shift+g", viewGrid, { preventDefault: true });
-  useHotkeys("mod+up", zoomIn, { preventDefault: true });
-  useHotkeys("mod+down", zoomOut, { preventDefault: true });
-  useHotkeys("mod+shift+m", viewStrictMode, {
-    preventDefault: true,
-  });
-  useHotkeys("mod+shift+f", viewFieldSummary, {
-    preventDefault: true,
-  });
-  useHotkeys("mod+shift+s", saveDiagramAs, {
-    preventDefault: true,
-  });
-  useHotkeys("mod+alt+c", copyAsImage, { preventDefault: true });
-  useHotkeys("enter", resetView, { preventDefault: true });
-  useHotkeys("mod+h", () => window.open(socials.docs, "_blank"), {
-    preventDefault: true,
-  });
-  useHotkeys("mod+alt+w", fitWindow, { preventDefault: true });
-  useHotkeys("alt+e", toggleDBMLEditor, { preventDefault: true });
+  useHotkeys("mod+i", fileImport, EDITOR_HOTKEY);
+  useHotkeys("mod+z", undo, EDITOR_HOTKEY);
+  useHotkeys("mod+y", redo, EDITOR_HOTKEY);
+  useHotkeys("mod+s", save, EDITOR_HOTKEY);
+  useHotkeys("mod+o", open, EDITOR_HOTKEY);
+  useHotkeys("mod+e", edit, EDITOR_HOTKEY);
+  useHotkeys("mod+d", duplicate, EDITOR_HOTKEY);
+  useHotkeys("mod+c", copy, EDITOR_HOTKEY);
+  useHotkeys("mod+v", paste, EDITOR_HOTKEY);
+  useHotkeys("mod+x", cut, EDITOR_HOTKEY);
+  useHotkeys("delete", del, EDITOR_HOTKEY);
+  useHotkeys("mod+shift+g", viewGrid, EDITOR_HOTKEY);
+  useHotkeys("mod+up", zoomIn, EDITOR_HOTKEY);
+  useHotkeys("mod+down", zoomOut, EDITOR_HOTKEY);
+  useHotkeys("mod+shift+m", viewStrictMode, EDITOR_HOTKEY);
+  useHotkeys("mod+shift+f", viewFieldSummary, EDITOR_HOTKEY);
+  useHotkeys("mod+shift+s", saveDiagramAs, EDITOR_HOTKEY);
+  useHotkeys("mod+alt+c", copyAsImage, EDITOR_HOTKEY);
+  useHotkeys("enter", resetView, EDITOR_HOTKEY);
+  useHotkeys("mod+h", () => window.open(socials.docs, "_blank"), EDITOR_HOTKEY);
+  useHotkeys("mod+alt+w", fitWindow, EDITOR_HOTKEY);
+  useHotkeys("alt+e", toggleDBMLEditor, EDITOR_HOTKEY);
+  useHotkeys("left", panLeft, EDITOR_HOTKEY);
+  useHotkeys("right", panRight, EDITOR_HOTKEY);
+  useHotkeys("up", panUp, EDITOR_HOTKEY);
+  useHotkeys("down", panDown, EDITOR_HOTKEY);
 
   return (
     <>
@@ -1742,6 +2038,15 @@ export default function ControlPanel({
         importFrom={importFrom}
         importDb={importDb}
         saveAsCopy={saveAsCopy}
+        fitToView={fitToView}
+        onBack={
+          openedFromStart
+            ? () => {
+                setModal(MODAL.NONE);
+                onBackToStart();
+              }
+            : undefined
+        }
       />
       <Sidesheet
         type={sidesheet}
@@ -1753,6 +2058,26 @@ export default function ControlPanel({
         open={modal === MODAL.CONFIG_CUSTOM_TYPES}
         onClose={() => setModal(MODAL.NONE)}
       />
+      <SemiModal
+        title={t("auto_connect_fk_modal_title")}
+        centered
+        visible={showAutoConnectModal}
+        onOk={confirmAutoConnectFKs}
+        onCancel={() => setShowAutoConnectModal(false)}
+        okText={t("auto_connect_fk")}
+        cancelText={t("cancel")}
+      >
+        <div className="space-y-3">
+          <p className="text-sm">{t("auto_connect_fk_modal_description")}</p>
+          <ol className="list-decimal ps-5 space-y-1 text-sm">
+            <li>{t("auto_connect_fk_rule_1")}</li>
+            <li>{t("auto_connect_fk_rule_2")}</li>
+          </ol>
+          <p className="text-sm font-medium mt-2">
+            {t("auto_connect_fk_modal_question")}
+          </p>
+        </div>
+      </SemiModal>
     </>
   );
 
@@ -1867,6 +2192,15 @@ export default function ControlPanel({
               <IconAddTable />
             </button>
           </Tooltip>
+          <Tooltip content={t("add_view")} position="bottom">
+            <button
+              className="flex items-center py-1 px-2 hover-2 rounded-sm disabled:opacity-50"
+              onClick={() => addView()}
+              disabled={layout.readOnly}
+            >
+              <IconAddView />
+            </button>
+          </Tooltip>
           <Tooltip content={t("add_area")} position="bottom">
             <button
               className="py-1 px-2 hover-2 rounded-sm flex items-center disabled:opacity-50"
@@ -1883,6 +2217,16 @@ export default function ControlPanel({
               disabled={layout.readOnly}
             >
               <IconAddNote />
+            </button>
+          </Tooltip>
+          <Divider layout="vertical" margin="8px" />
+          <Tooltip content={t("auto_arrange")} position="bottom">
+            <button
+              className="py-1 px-2 hover-2 rounded-sm text-xl -mt-0.5 disabled:opacity-50"
+              onClick={autoArrangeTables}
+              disabled={layout.readOnly}
+            >
+              <i className="fa-solid fa-wand-magic-sparkles" />
             </button>
           </Tooltip>
           <Divider layout="vertical" margin="8px" />
@@ -1948,7 +2292,7 @@ export default function ControlPanel({
             <img
               width={54}
               src={icon}
-              alt="logo"
+              alt={t("logo")}
               className="ms-7 min-w-[54px]"
             />
           </Link>
@@ -1962,8 +2306,12 @@ export default function ControlPanel({
                     filter:
                       "opacity(0.4) drop-shadow(0 0 0 white) drop-shadow(0 0 0 white)",
                   }}
-                  alt={databases[database].name + " icon"}
-                  title={databases[database].name + " diagram"}
+                  alt={t("database_icon", {
+                    databaseName: databases[database].name,
+                  })}
+                  title={t("database_diagram", {
+                    databaseName: databases[database].name,
+                  })}
                 />
               )}
               <Slot name="diagram-title-prefix" />
@@ -1999,6 +2347,27 @@ export default function ControlPanel({
                   <Dropdown
                     key={category}
                     position="bottomLeft"
+                    onVisibleChange={(visible) => {
+                      const tagged = Object.keys(menu[category]).filter(
+                        (item) =>
+                          (menu[category][item].is_new ||
+                            menu[category][item].children?.some(
+                              (child) => child.is_new,
+                            )) &&
+                          !seenMenuTags.has(item),
+                      );
+                      if (visible || !tagged.length) return;
+                      const next = new Set([...seenMenuTags, ...tagged]);
+                      setSeenMenuTags(next);
+                      try {
+                        localStorage.setItem(
+                          "drawdb:seenMenuTags",
+                          JSON.stringify([...next]),
+                        );
+                      } catch {
+                        return;
+                      }
+                    }}
                     style={{
                       width: "240px",
                       direction: isRtl(i18n.language) ? "rtl" : "ltr",
@@ -2041,6 +2410,15 @@ export default function ControlPanel({
                                                 {e.label}
                                               </Tag>
                                             )}
+                                            {e.is_new && (
+                                              <Tag
+                                                size="small"
+                                                color="blue"
+                                                className="flex-shrink-0"
+                                              >
+                                                {t("new")}
+                                              </Tag>
+                                            )}
                                           </Dropdown.Item>
                                         );
                                       },
@@ -2056,7 +2434,14 @@ export default function ControlPanel({
                                   }}
                                   onClick={menu[category][item].function}
                                 >
-                                  {t(item)}
+                                  <span className="flex items-center gap-2">
+                                    {t(item)}
+                                    {menu[category][item].is_new && (
+                                      <Tag size="small" color="blue">
+                                        {t("new")}
+                                      </Tag>
+                                    )}
+                                  </span>
 
                                   {isRtl(i18n.language) ? (
                                     <IconChevronLeft />
@@ -2099,7 +2484,14 @@ export default function ControlPanel({
                               }
                             >
                               <div className="w-full flex items-center justify-between">
-                                <div>{t(item)}</div>
+                                <div className="flex items-center gap-2">
+                                  {t(item)}
+                                  {menu[category][item].is_new && (
+                                    <Tag size="small" color="blue">
+                                      {t("new")}
+                                    </Tag>
+                                  )}
+                                </div>
                                 <div className="flex items-center gap-1">
                                   {menu[category][item].shortcut && (
                                     <div className="text-gray-400">
@@ -2117,7 +2509,24 @@ export default function ControlPanel({
                     }
                   >
                     <div className="px-3 py-1 hover-2 rounded-sm">
-                      {t(category)}
+                      {Object.keys(menu[category]).some(
+                        (item) =>
+                          (menu[category][item].is_new ||
+                            menu[category][item].children?.some(
+                              (child) => child.is_new,
+                            )) &&
+                          !seenMenuTags.has(item),
+                      ) ? (
+                        <Badge
+                          dot
+                          type="primary"
+                          countStyle={{ right: -7, top: 5 }}
+                        >
+                          {t(category)}
+                        </Badge>
+                      ) : (
+                        t(category)
+                      )}
                     </div>
                   </Dropdown>
                 ))}

@@ -5,6 +5,112 @@ import { createDiagramStore, openDatabase } from "./database.js";
 import { createApplication } from "./index.js";
 import { isValidOperationPreview } from "./protocol.js";
 import { createTableLockManager } from "./tableLocks.js";
+import vm from "node:vm";
+
+test("serves safely encoded backend configuration at runtime without caching", async (t) => {
+  const backendUrl = 'https://backend.example.test/"quoted"';
+  const gistBackendUrl = "https://gists.example.test";
+  const application = createApplication({
+    databasePath: ":memory:",
+    backendUrl,
+    gistBackendUrl,
+  });
+  await new Promise((resolve) =>
+    application.server.listen(0, "127.0.0.1", resolve),
+  );
+  t.after(() => {
+    application.websocket.close();
+    application.server.close();
+    application.database.close();
+  });
+  const response = await fetch(
+    `http://127.0.0.1:${application.server.address().port}/config.js`,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.match(response.headers.get("content-type"), /javascript/);
+  const context = { window: {} };
+  vm.runInNewContext(await response.text(), context);
+  assert.equal(context.window.__DRAWDB_CONFIG__.backendUrl, backendUrl);
+  assert.equal(context.window.__DRAWDB_CONFIG__.gistBackendUrl, gistBackendUrl);
+});
+
+test("new upstream diagram fields survive API saves and collaborative snapshots", async (t) => {
+  const application = createApplication({ databasePath: ":memory:" });
+  await new Promise((resolve) =>
+    application.server.listen(0, "127.0.0.1", resolve),
+  );
+  const base = `http://127.0.0.1:${application.server.address().port}`;
+  const document = {
+    database: "postgres",
+    tables: [{ id: 0, width: 420, areaId: "area-1", fields: [] }],
+    references: [],
+    areas: [{ id: "area-1", x: 0, y: 0, width: 800, height: 400 }],
+    views: [{ id: "view-1", name: "active_users", baseTableId: 0 }],
+    sqlHeader: "SET search_path TO public;",
+  };
+  const createdResponse = await fetch(`${base}/api/diagrams`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: "upstream-fields",
+      name: "Upstream fields",
+      document,
+    }),
+  });
+  assert.equal(createdResponse.status, 201);
+  const socket = await openSocket(
+    base.replace("http", "ws") + "/ws/diagrams/upstream-fields",
+  );
+  t.after(() => {
+    socket.close();
+    application.websocket.close();
+    application.server.close();
+    application.database.close();
+  });
+  const joined = waitForMessage(socket, (message) => message.type === "joined");
+  socket.send(
+    JSON.stringify({
+      type: "join",
+      diagramId: "upstream-fields",
+      lastVersion: 1,
+      participant: {
+        clientId: "upgrade-client",
+        displayName: "Upgrade",
+        color: "#000",
+      },
+    }),
+  );
+  await joined;
+  const updated = {
+    ...document,
+    sqlHeader: "SET search_path TO reporting;",
+    views: [...document.views, { id: "view-2", name: "summary" }],
+  };
+  const applied = waitForMessage(
+    socket,
+    (message) => message.type === "operation_applied",
+  );
+  socket.send(
+    JSON.stringify({
+      type: "operation",
+      diagramId: "upstream-fields",
+      clientId: "upgrade-client",
+      operationId: "upgrade-operation",
+      baseVersion: 1,
+      operation: {
+        type: "snapshot.replace",
+        payload: { name: "Updated fields", document: updated },
+      },
+    }),
+  );
+  assert.deepEqual((await applied).operation.payload.document, updated);
+  const reloaded = await (
+    await fetch(`${base}/api/diagrams/upstream-fields`)
+  ).json();
+  assert.deepEqual(reloaded.document, updated);
+  assert.equal(reloaded.version, 2);
+});
 
 function waitForMessage(socket, predicate) {
   return new Promise((resolve, reject) => {

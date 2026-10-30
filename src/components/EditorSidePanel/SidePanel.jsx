@@ -1,8 +1,8 @@
-import { useMemo } from "react";
+import { memo, useMemo, useState } from "react";
 import { Tabs, TabPane } from "@douyinfe/semi-ui";
 import { IconCode, IconList } from "@douyinfe/semi-icons";
 import { IconTable, IconRelationship } from "../../icons";
-import { Tab } from "../../data/constants";
+import { DB, Tab } from "../../data/constants";
 import {
   useLayout,
   useSelect,
@@ -12,6 +12,7 @@ import {
   useEnums,
   useTypes,
   useSettings,
+  useViews,
 } from "../../hooks";
 import { useTranslation } from "react-i18next";
 import RelationshipsTab from "./RelationshipsTab/RelationshipsTab";
@@ -20,13 +21,15 @@ import Issues from "./Issues";
 import AreasTab from "./AreasTab/AreasTab";
 import NotesTab from "./NotesTab/NotesTab";
 import TablesTab from "./TablesTab/TablesTab";
+import ViewsTab from "./ViewsTab/ViewsTab";
 import { databases } from "../../data/databases";
 import EnumsTab from "./EnumsTab/EnumsTab";
 import { isRtl } from "../../i18n/utils/rtl";
 import i18n from "../../i18n/i18n";
 import DBMLEditor from "./DBMLEditor";
+import SqlHeaderTab from "./SqlHeaderTab";
 
-export default function SidePanel({ width, resize, setResize }) {
+export default memo(function SidePanel({ width, resize, setResize }) {
   const { layout, setLayout } = useLayout();
   const { settings } = useSettings();
   const { selectedElement, setSelectedElement } = useSelect();
@@ -35,7 +38,9 @@ export default function SidePanel({ width, resize, setResize }) {
   const { notesCount } = useNotes();
   const { typesCount } = useTypes();
   const { enumsCount } = useEnums();
+  const { viewsCount } = useViews();
   const { t } = useTranslation();
+  const [dbmlProblems, setDbmlProblems] = useState([]);
 
   const tabList = useMemo(() => {
     const tabs = [
@@ -43,6 +48,11 @@ export default function SidePanel({ width, resize, setResize }) {
         tab: `${t("tables")} (${tablesCount})`,
         itemKey: Tab.TABLES,
         component: <TablesTab />,
+      },
+      {
+        tab: `${t("views")} (${viewsCount})`,
+        itemKey: Tab.VIEWS,
+        component: <ViewsTab />,
       },
       {
         tab: `${t("relationships")} (${relationshipsCount})`,
@@ -77,17 +87,28 @@ export default function SidePanel({ width, resize, setResize }) {
       });
     }
 
+    if (database !== DB.GENERIC) {
+      tabs.push({
+        tab: t("sql_header"),
+        itemKey: Tab.SQL_HEADER,
+        component: <SqlHeaderTab />,
+      });
+    }
+
     return isRtl(i18n.language) ? tabs.reverse() : tabs;
   }, [
     t,
     database,
     tablesCount,
+    viewsCount,
     relationshipsCount,
     areasCount,
     typesCount,
     enumsCount,
     notesCount,
   ]);
+
+  const fillHeight = selectedElement.currentTab === Tab.SQL_HEADER;
 
   const setDbmlEditor = (value) => {
     setLayout((prev) => ({ ...prev, dbmlEditor: value }));
@@ -101,7 +122,7 @@ export default function SidePanel({ width, resize, setResize }) {
       >
         <div className="h-full flex-1 overflow-y-auto">
           {layout.dbmlEditor ? (
-            <DBMLEditor />
+            <DBMLEditor onProblemsChange={setDbmlProblems} />
           ) : (
             <Tabs
               type="card"
@@ -113,6 +134,8 @@ export default function SidePanel({ width, resize, setResize }) {
               }
               collapsible
               tabBarStyle={{ direction: "ltr" }}
+              className={fillHeight ? "h-full flex flex-col" : ""}
+              contentStyle={fillHeight ? { flex: 1, minHeight: 0 } : undefined}
             >
               {tabList.length &&
                 tabList.map((tab) => (
@@ -120,8 +143,11 @@ export default function SidePanel({ width, resize, setResize }) {
                     tab={tab.tab}
                     itemKey={tab.itemKey}
                     key={tab.itemKey}
+                    className={fillHeight ? "h-full *:h-full" : ""}
                   >
-                    <div className="p-2">{tab.component}</div>
+                    <div className={fillHeight ? "p-2 h-full" : "p-2"}>
+                      {tab.component}
+                    </div>
                   </TabPane>
                 ))}
             </Tabs>
@@ -168,7 +194,7 @@ export default function SidePanel({ width, resize, setResize }) {
         </div>
         {layout.issues && (
           <div className="mt-auto border-t-2 border-color shadow-inner">
-            <Issues />
+            <Issues dbmlProblems={layout.dbmlEditor ? dbmlProblems : []} />
           </div>
         )}
       </div>
@@ -184,4 +210,4 @@ export default function SidePanel({ width, resize, setResize }) {
       </div>
     </div>
   );
-}
+});

@@ -20,11 +20,13 @@ import {
   useTypes,
   useSaveState,
   useEnums,
+  useViews,
   useNavigateWithParams,
   useCollab,
 } from "../hooks";
 import FloatingControls from "./FloatingControls";
-import { Button, Modal, Tag } from "@douyinfe/semi-ui";
+import StartModal from "./StartModal";
+import { Button, Modal } from "@douyinfe/semi-ui";
 import { IconAlertTriangle } from "@douyinfe/semi-icons";
 import { useTranslation } from "react-i18next";
 import { databases } from "../data/databases";
@@ -51,6 +53,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
   const [showSelectDbModal, setShowSelectDbModal] = useState(false);
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [selectedDb, setSelectedDb] = useState("");
+  const [startWith, setStartWith] = useState(null);
 
   const pendingNewIdRef = useRef(null);
   const loadedIdRef = useRef(null);
@@ -64,6 +67,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
   const { saveState, setSaveState } = useSaveState();
   const { transform, setTransform } = useTransform();
   const { enums, setEnums } = useEnums();
+  const { views, setViews } = useViews();
   const {
     tables,
     relationships,
@@ -71,6 +75,8 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     setRelationships,
     database,
     setDatabase,
+    sqlHeader,
+    setSqlHeader,
   } = useDiagram();
   const { undoStack, redoStack, setUndoStack, setRedoStack } = useUndoRedo();
   const {
@@ -105,12 +111,25 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
       references: relationships,
       notes,
       areas,
+      views,
+      sqlHeader,
       pan: transform.pan,
       zoom: transform.zoom,
       ...(databases[database].hasEnums && { enums }),
       ...(databases[database].hasTypes && { types }),
     }),
-    [database, tables, relationships, notes, areas, transform, enums, types],
+    [
+      database,
+      tables,
+      relationships,
+      notes,
+      areas,
+      views,
+      sqlHeader,
+      transform,
+      enums,
+      types,
+    ],
   );
 
   const applyDiagramState = useCallback(
@@ -132,6 +151,8 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
       }
       setTypes(diagram.types ?? []);
       setEnums(diagram.enums ?? []);
+      setViews(diagram.views ?? []);
+      setSqlHeader(diagram.sqlHeader ?? "");
       if (!remote) {
         setUndoStack([]);
         setRedoStack([]);
@@ -141,6 +162,8 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
       setAreas,
       setDatabase,
       setEnums,
+      setViews,
+      setSqlHeader,
       setNotes,
       setRedoStack,
       setRelationships,
@@ -209,6 +232,8 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
       setNotes([]);
       setTypes([]);
       setEnums([]);
+      setViews([]);
+      setSqlHeader("");
       setUndoStack([]);
       setRedoStack([]);
       setTransform({ zoom: 1, pan: { x: 0, y: 0 } });
@@ -268,6 +293,8 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
       setRedoStack([]);
       setTypes(template.types ?? []);
       setEnums(template.enums ?? []);
+      setViews(template.views ?? []);
+      setSqlHeader(template.sqlHeader ?? "");
     };
 
     if (!loadedDiagramId) {
@@ -299,6 +326,8 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     setTypes,
     setDatabase,
     setEnums,
+    setViews,
+    setSqlHeader,
     selectedDb,
     setSaveState,
     setLayout,
@@ -322,6 +351,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
       tables?.length === 0 &&
       areas?.length === 0 &&
       notes?.length === 0 &&
+      views?.length === 0 &&
       types?.length === 0
     )
       return;
@@ -336,11 +366,12 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     tables?.length,
     areas?.length,
     notes?.length,
+    views?.length,
     types?.length,
     relationships?.length,
-    transform.zoom,
     title,
     gistId,
+    sqlHeader,
     setSaveState,
   ]);
 
@@ -374,6 +405,9 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
           setTitle={setTitle}
           lastSaved={lastSaved}
           toolbarContainer={toolbarContainer}
+          startWith={startWith}
+          setStartWith={setStartWith}
+          onBackToStart={() => setShowSelectDbModal(true)}
         />
       </IdContext.Provider>
       <div
@@ -454,55 +488,19 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
         </div>
         <Slot name="right-panel" />
       </div>
-      <Modal
-        centered
-        size="medium"
-        closable={false}
-        hasCancel={false}
-        title={t("pick_db")}
-        okText={t("confirm")}
+      <StartModal
         visible={showSelectDbModal}
-        onOk={() => {
-          if (selectedDb === "") return;
-          setDatabase(selectedDb);
+        onStart={(database, option) => {
+          setSelectedDb(database);
+          setDatabase(database);
           setShowSelectDbModal(false);
+          if (option.modal) setStartWith(option);
         }}
-        okButtonProps={{ disabled: selectedDb === "" }}
-      >
-        <div className="grid grid-cols-3 gap-4 place-content-center">
-          {Object.values(databases).map((x) => (
-            <div
-              key={x.name}
-              onClick={() => setSelectedDb(x.label)}
-              className={`space-y-3 p-3 rounded-md border-2 select-none ${
-                settings.mode === "dark"
-                  ? "bg-zinc-700 hover:bg-zinc-600"
-                  : "bg-zinc-100 hover:bg-zinc-200"
-              } ${selectedDb === x.label ? "border-zinc-400" : "border-transparent"}`}
-            >
-              <div className="flex items-center justify-between">
-                <div className="font-semibold">{x.name}</div>
-                {x.beta && (
-                  <Tag size="small" color="light-blue">
-                    Beta
-                  </Tag>
-                )}
-              </div>
-              {x.image && (
-                <img
-                  src={x.image}
-                  className="h-8"
-                  style={{
-                    filter:
-                      "opacity(0.4) drop-shadow(0 0 0 white) drop-shadow(0 0 0 white)",
-                  }}
-                />
-              )}
-              <div className="text-xs">{x.description}</div>
-            </div>
-          ))}
-        </div>
-      </Modal>
+        onTemplate={(templateId) => {
+          setShowSelectDbModal(false);
+          navigate(`/editor/templates/${templateId}`, { replace: true });
+        }}
+      />
       <Modal
         visible={showRestoreModal}
         centered

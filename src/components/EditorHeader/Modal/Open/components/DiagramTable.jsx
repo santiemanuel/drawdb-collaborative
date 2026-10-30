@@ -1,7 +1,13 @@
 import { Tag } from "@douyinfe/semi-ui";
 import { useTranslation } from "react-i18next";
 import SortableHeader from "./SortableHeader";
-import { SOURCE, databaseName, formatSize, ownerLabel } from "../diagram";
+import {
+  SOURCE,
+  databaseName,
+  formatSize,
+  isOwnEntry,
+  ownerLabel,
+} from "../diagram";
 
 function TypeCell({ entry }) {
   const { t } = useTranslation();
@@ -15,15 +21,14 @@ function TypeCell({ entry }) {
 
 function OwnerCell({ entry, currentUserId }) {
   const { t } = useTranslation();
-  const label = ownerLabel(entry, currentUserId);
-  if (label === "You") {
+  if (isOwnEntry(entry, currentUserId)) {
     return (
       <Tag size="small" color="blue">
         {t("you")}
       </Tag>
     );
   }
-  return <span className="text-sm">{label}</span>;
+  return <span className="text-sm">{ownerLabel(entry, currentUserId, t)}</span>;
 }
 
 function formatTimestamp(date) {
@@ -50,7 +55,7 @@ function useColumns({ showType, showOwner, currentUserId }) {
     {
       key: "database",
       label: t("database"),
-      render: ({ entry }) => databaseName(entry.database),
+      render: ({ entry }) => databaseName(entry.database, t),
     },
     {
       key: "lastModified",
