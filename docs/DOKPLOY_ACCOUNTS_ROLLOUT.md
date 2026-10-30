@@ -67,3 +67,13 @@ Owners manage membership and public links. Editors can edit project diagrams. Vi
 - Restore test state only through approved, recoverable operations. Do not test by modifying real team diagrams.
 
 Local automated checks do not prove the live Google Console callback, gateway routing, or Dokploy volume configuration. Record those checks separately.
+
+## Health checks behind an existing authentication proxy
+
+Use `http://127.0.0.1:3000/healthz` for the application's container healthcheck, not `/api/diagrams`: private APIs correctly return 401 without an application session. `/healthz` only reports process/database readiness (`status: ok`), never project/user data. It does not need an exemption at the public proxy. A Compose healthcheck overrides the image's Dockerfile healthcheck, so update the effective Compose check too.
+
+Dokploy environment variables must be forwarded into the **drawdb** service itself, not only an OAuth proxy sidecar: `APP_URL`, `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET`. Keep existing proxy credentials, callback, authenticated-email file, and restrictions intact. The application additionally needs its own Google callback `/auth/google/callback`; keep the proxy's existing callback registered as well.
+
+The application exchanges its own OAuth code with Google over HTTPS. An internal-only Docker network cannot provide that outbound connection. Any addition of outbound connectivity is an explicit deployment/security decision; do not remove the internal network or publish the application port as a workaround.
+
+The pre-migration backup runs before HTTP readiness. Large databases may need a longer healthcheck start period and free volume space for the backup; inspect actual startup logs before changing limits. Keep the existing memory/CPU limits unless measured failures justify an approved change. If an external Dockerfile patch is used, ensure it retains `COPY --from=build /app/scripts ./scripts` so documented recovery commands are present.

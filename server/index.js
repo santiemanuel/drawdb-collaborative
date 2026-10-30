@@ -37,6 +37,16 @@ export function createApplication({
     res.set("X-Content-Type-Options", "nosniff");
     next();
   });
+  // Infrastructure probes must not depend on a user session or private APIs.
+  app.get("/healthz", (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    try {
+      database.prepare("SELECT 1").get();
+      res.json({ status: "ok" });
+    } catch {
+      res.status(503).json({ status: "unavailable" });
+    }
+  });
   auth.routes(app);
   mountProjects(app, access, auth, store);
 
