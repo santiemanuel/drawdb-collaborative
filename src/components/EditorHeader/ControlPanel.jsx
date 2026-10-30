@@ -132,6 +132,7 @@ export default function ControlPanel({
   startWith,
   setStartWith,
   onBackToStart,
+  collaborationPanel,
 }) {
   const { id: diagramId } = useParams();
   const { projectId, role } = useProjectAccess();
@@ -2036,7 +2037,7 @@ export default function ControlPanel({
       <div>
         {layout.header && (
           <div
-            className="flex justify-between items-center border-b border-color pb-2"
+            className="editor-header-container relative z-40 flex justify-between items-center border-b border-color pb-2"
             style={isRtl(i18n.language) ? { direction: "rtl" } : {}}
           >
             {header()}
@@ -2317,10 +2318,10 @@ export default function ControlPanel({
   function header() {
     return (
       <nav
-        className="editor-header flex justify-between pt-1 items-center whitespace-nowrap"
+        className="editor-header min-w-0 flex-1 flex justify-between pt-1 items-center whitespace-nowrap"
         style={isRtl(i18n.language) ? { direction: "rtl" } : {}}
       >
-        <div className="flex justify-start items-center">
+        <div className="min-w-0 w-full flex justify-start items-center">
           <Link to="/">
             <img
               width={54}
@@ -2329,8 +2330,8 @@ export default function ControlPanel({
               className="ms-7 min-w-[54px]"
             />
           </Link>
-          <div className="ms-1 mt-1">
-            <div className="flex items-center ms-3 gap-2">
+          <div className="min-w-0 flex-1 ms-1 mt-1">
+            <div className="editor-title-row flex items-center ms-3 gap-2">
               {databases[database].image && (
                 <img
                   src={databases[database].image}
@@ -2349,7 +2350,7 @@ export default function ControlPanel({
               )}
               <Slot name="diagram-title-prefix" />
               <div
-                className="editor-diagram-title text-xl flex items-center gap-1 me-1"
+                className="editor-diagram-title min-w-0 text-xl flex items-center gap-1 me-1"
                 onPointerEnter={(e) => e.isPrimary && setShowEditName(true)}
                 onPointerLeave={(e) => e.isPrimary && setShowEditName(false)}
                 onPointerDown={(e) => {
@@ -2373,6 +2374,7 @@ export default function ControlPanel({
               {(showEditName || modal === MODAL.RENAME) && !layout.readOnly && (
                 <IconEdit />
               )}
+              {collaborationPanel}
             </div>
             <div className="flex items-center">
               <div className="editor-menu-row flex justify-start text-md select-none me-2">

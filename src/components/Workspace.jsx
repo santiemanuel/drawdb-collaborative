@@ -418,6 +418,9 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     <div className="editor-workspace h-full flex flex-col overflow-hidden theme">
       <IdContext.Provider value={{ gistId, setGistId, version, setVersion }}>
         <ControlPanel
+          collaborationPanel={
+            isDiagram && loadedDiagramId ? <CollaborationPanel inline /> : null
+          }
           title={title}
           setTitle={setTitle}
           lastSaved={lastSaved}
@@ -462,7 +465,9 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
             <CollaborationCursors />
           </CanvasContextProvider>
           <Slot name="canvas-overlay" />
-          {isDiagram && loadedDiagramId && <CollaborationPanel />}
+          {isDiagram && loadedDiagramId && !layout.header && (
+            <CollaborationPanel />
+          )}
           {layout.toolbar && (
             <div
               ref={setToolbarContainer}
