@@ -6,6 +6,13 @@ const spanish = {
 
 const es = {
   translation: {
+    layout_partial_routes:
+      "Las tablas se organizaron. Algunas relaciones siguen usando el trazado habitual; mover los obstáculos fijados puede mejorarlas.",
+    layout_locked:
+      "Otro editor está usando una tabla. Inténtalo de nuevo en unos segundos.",
+    layout_failed:
+      "No se pudo organizar el diagrama. Tus cambios se conservaron.",
+    layout_arranging: "Organizando con ELK…",
     mobile_navigate: "Navegar",
     mobile_edit: "Editar objetos",
     collaboration_connected: "Conectado",

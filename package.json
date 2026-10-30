@@ -16,10 +16,10 @@
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "prepare": "husky",
-    "claim:legacy": "node scripts/claim-legacy-diagrams.js"
+    "claim:legacy": "node scripts/claim-legacy-diagrams.js",
+    "test:layout": "node --test src/utils/elk*.test.js src/utils/layoutRoute.test.js src/utils/layoutTransaction.test.js"
   },
   "dependencies": {
-    "@dagrejs/dagre": "^3.1.1",
     "@dbml/core": "^3.13.9",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
@@ -32,6 +32,7 @@
     "better-sqlite3": "^12.11.1",
     "dexie": "^3.2.4",
     "dexie-react-hooks": "^1.1.7",
+    "elkjs": "0.12.1",
     "express": "^5.2.1",
     "file-saver": "^2.0.5",
     "framer-motion": "^10.18.0",

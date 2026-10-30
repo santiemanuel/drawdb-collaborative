@@ -1,5 +1,10 @@
+import {
+  applyLayoutChanges,
+  isLayoutSnapshotCurrent,
+  shouldReleaseLayoutLocks,
+} from "../../utils/layoutTransaction";
 import { useProjectAccess } from "../../context/ProjectAccessContext";
-import { useContext, useEffect, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { Slot } from "../../context/ExtensionsContext";
 import { createPortal } from "react-dom";
@@ -60,6 +65,7 @@ import {
 } from "../../data/schemas";
 import { db } from "../../data/db";
 import {
+  useCollab,
   useLayout,
   useSettings,
   useTransform,
@@ -110,7 +116,12 @@ import {
   getViewWidth,
   resolveViewColumns,
 } from "../../utils/views";
-import { autoArrange } from "../../utils/autoArrange";
+import {
+  autoArrange,
+  getLayoutGeometrySignature,
+  getLayoutObstacles,
+  getLayoutTables,
+} from "../../utils/autoArrange";
 import { schemaQueries } from "../../utils/importFrom/schemaQuery";
 import { findAutoFKRelationships } from "../../utils/autoRelationships";
 import { deleteFromCache, STORAGE_KEY } from "../../utils/cache";
@@ -128,6 +139,7 @@ export default function ControlPanel({
   title,
   setTitle,
   lastSaved,
+  saveOutcome,
   toolbarContainer,
   startWith,
   setStartWith,
@@ -211,6 +223,109 @@ export default function ControlPanel({
   const isTemplate = useMatch("/editor/templates/:id");
   const navigate = useNavigateWithParams();
 
+  const collab = useCollab();
+  const [arranging, setArranging] = useState(false);
+  const arrangeBusy = useRef(false);
+  const activeLayout = useRef(0);
+  const layoutAbort = useRef(null);
+  const retainedLayoutLocks = useRef(null);
+  const latestLayoutState = useRef(null);
+  const geometrySignature = () =>
+    getLayoutGeometrySignature(
+      getLayoutTables(tables, areas),
+      relationships,
+      settings,
+      {
+        obstacles: getLayoutObstacles(notes, views, tables, settings),
+      },
+    );
+  latestLayoutState.current = {
+    diagramId,
+    readOnly: layout.readOnly,
+    signature: geometrySignature,
+    tables,
+    relationships,
+    undoStack,
+    redoStack,
+  };
+  const releaseLayoutLocks = () => {
+    const held = retainedLayoutLocks.current;
+    if (!held) return;
+    retainedLayoutLocks.current = null;
+    held.ids.forEach(collab.releaseTableLockRetention);
+    collab.releaseTableLocks(held.fresh);
+  };
+  useEffect(() => {
+    const held = retainedLayoutLocks.current;
+    if (shouldReleaseLayoutLocks(held, saveOutcome, diagramId))
+      releaseLayoutLocks();
+  }, [saveOutcome, diagramId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(
+    () => () => {
+      activeLayout.current += 1;
+      layoutAbort.current?.abort();
+      releaseLayoutLocks();
+    },
+    [diagramId], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  const lockLayoutTables = async (ids) => {
+    if (!diagramId || diagramId === "blank" || isTemplate) return true;
+    const fresh = ids.filter((id) => !collab.hasTableLock(id));
+    if (!(await collab.acquireTableLocks(fresh))) return false;
+    ids.forEach(collab.retainTableLock);
+    retainedLayoutLocks.current = { ids, fresh, appliedAt: performance.now() };
+    return true;
+  };
+  const applyLayoutHistory = async (entry, direction) => {
+    if (arrangeBusy.current || retainedLayoutLocks.current) return;
+    arrangeBusy.current = true;
+    const initial = latestLayoutState.current;
+    const signature = initial.signature();
+    const ids = entry.elements.map((e) => e.id);
+    try {
+      if (!(await lockLayoutTables(ids))) throw new Error("locked");
+      const current = latestLayoutState.current;
+      const stack =
+        direction === "undo" ? current.undoStack : current.redoStack;
+      if (
+        !isLayoutSnapshotCurrent(
+          { diagramId: initial.diagramId, signature },
+          current,
+        ) ||
+        stack.at(-1) !== entry
+      ) {
+        releaseLayoutLocks();
+        return;
+      }
+      const updated = applyLayoutChanges(
+        current.tables,
+        current.relationships,
+        entry,
+        direction,
+      );
+      setTables(updated.tables);
+      setRelationships(updated.relationships);
+      if (direction === "undo") {
+        setUndoStack((prev) => prev.slice(0, -1));
+        setRedoStack((prev) => [...prev, entry]);
+      } else {
+        setRedoStack((prev) => prev.slice(0, -1));
+        setUndoStack((prev) => [...prev, entry]);
+      }
+      setSaveState(State.SAVING);
+    } catch {
+      releaseLayoutLocks();
+      Toast.warning(
+        t("layout_locked", {
+          defaultValue: "Another editor is using a table. Try again shortly.",
+        }),
+      );
+    } finally {
+      arrangeBusy.current = false;
+    }
+  };
+
   const swapDbmlSnapshot = (entry) => {
     const current = { tables, relationships, enums };
     applyDiagramPlan(diffDiagram(current, entry.data.snapshot), {
@@ -230,6 +345,7 @@ export default function ControlPanel({
     if (layout.readOnly) return;
     if (undoStack.length === 0) return;
     const a = undoStack[undoStack.length - 1];
+    if (a.autoLayout) return applyLayoutHistory(a, "undo");
     setUndoStack((prev) => prev.filter((_, i) => i !== prev.length - 1));
 
     if (a.bulk) {
@@ -448,6 +564,7 @@ export default function ControlPanel({
     if (layout.readOnly) return;
     if (redoStack.length === 0) return;
     const a = redoStack[redoStack.length - 1];
+    if (a.autoLayout) return applyLayoutHistory(a, "redo");
     setRedoStack((prev) => prev.filter((e, i) => i !== prev.length - 1));
 
     if (a.bulk) {
@@ -788,39 +905,113 @@ export default function ControlPanel({
       pan: { x: centerX, y: centerY },
     }));
   };
-  const autoArrangeTables = () => {
-    const positions = autoArrange(tables, relationships, settings);
-    const positionById = new Map(positions.map((p) => [p.id, p]));
-
-    const elements = [];
-    const arrangedTables = tables.map((table) => {
-      const pos = positionById.get(table.id);
-      if (!pos || (pos.x === table.x && pos.y === table.y)) return table;
-      elements.push({
-        id: table.id,
-        type: ObjectType.TABLE,
-        undo: { x: table.x, y: table.y },
-        redo: { x: pos.x, y: pos.y },
+  const autoArrangeTables = async () => {
+    if (!tables.length) return;
+    if (layout.readOnly || arrangeBusy.current || retainedLayoutLocks.current)
+      return;
+    arrangeBusy.current = true;
+    setArranging(true);
+    const request = ++activeLayout.current;
+    const controller = new AbortController();
+    layoutAbort.current = controller;
+    const initial = latestLayoutState.current;
+    const signature = initial.signature();
+    const unchanged = () => {
+      const current = latestLayoutState.current;
+      return (
+        request === activeLayout.current &&
+        isLayoutSnapshotCurrent(
+          { diagramId: initial.diagramId, signature },
+          current,
+        )
+      );
+    };
+    try {
+      const result = await autoArrange(
+        getLayoutTables(tables, areas),
+        relationships,
+        settings,
+        {
+          signal: controller.signal,
+          obstacles: getLayoutObstacles(notes, views, tables, settings),
+        },
+      );
+      if (!unchanged() || (!result.positions.length && !result.routes.length))
+        return;
+      const positions = new Map(result.positions.map((p) => [p.id, p]));
+      const elements = [];
+      const arrangedTables = tables.map((table) => {
+        const pos = positions.get(table.id);
+        if (!pos || (pos.x === table.x && pos.y === table.y)) return table;
+        elements.push({
+          id: table.id,
+          type: ObjectType.TABLE,
+          undo: { x: table.x, y: table.y },
+          redo: { x: pos.x, y: pos.y },
+        });
+        return { ...table, x: pos.x, y: pos.y };
       });
-      return { ...table, x: pos.x, y: pos.y };
-    });
-
-    if (elements.length === 0) return;
-
-    for (const element of elements) {
-      updateTable(element.id, element.redo);
+      if (!(await lockLayoutTables(elements.map((e) => e.id))))
+        throw new Error("locked");
+      if (!unchanged()) {
+        releaseLayoutLocks();
+        return;
+      }
+      const routeMap = new Map(
+        result.routes.map((r) => [
+          r.id,
+          {
+            version: 1,
+            paths: r.paths,
+            signature: result.signature,
+          },
+        ]),
+      );
+      const routes = relationships.map((rel) => ({
+        id: rel.id,
+        undo: rel.layoutRoute,
+        redo: routeMap.get(rel.id),
+      }));
+      setTables((prev) =>
+        prev.map((table) => {
+          const pos = positions.get(table.id);
+          return pos ? { ...table, x: pos.x, y: pos.y } : table;
+        }),
+      );
+      setRelationships((prev) =>
+        prev.map((rel) => ({ ...rel, layoutRoute: routeMap.get(rel.id) })),
+      );
+      setUndoStack((prev) => [
+        ...prev,
+        {
+          action: Action.MOVE,
+          bulk: true,
+          autoLayout: true,
+          message: t("auto_arrange"),
+          elements,
+          routes,
+        },
+      ]);
+      setRedoStack([]);
+      setSaveState(State.SAVING);
+      fitToView(arrangedTables);
+      if (result.warnings?.length) Toast.info(t("layout_partial_routes"));
+    } catch (error) {
+      releaseLayoutLocks();
+      if (controller.signal.aborted || request !== activeLayout.current) return;
+      Toast.warning(
+        t(error.message === "locked" ? "layout_locked" : "layout_failed", {
+          defaultValue:
+            error.message === "locked"
+              ? "Another editor is using a table. Try again shortly."
+              : "Could not arrange the diagram. Your changes were preserved.",
+        }),
+      );
+    } finally {
+      arrangeBusy.current = false;
+      if (layoutAbort.current === controller) layoutAbort.current = null;
+      setArranging(false);
     }
-    setUndoStack((prev) => [
-      ...prev,
-      {
-        action: Action.MOVE,
-        bulk: true,
-        message: t("auto_arrange"),
-        elements,
-      },
-    ]);
-    setRedoStack([]);
-    fitToView(arrangedTables);
   };
   const autoConnectFKs = () => {
     if (layout.readOnly) return;
@@ -1752,7 +1943,7 @@ export default function ControlPanel({
       },
       auto_arrange: {
         function: autoArrangeTables,
-        disabled: layout.readOnly,
+        disabled: layout.readOnly || arranging,
       },
       auto_connect_fk: {
         function: autoConnectFKs,
@@ -2251,12 +2442,16 @@ export default function ControlPanel({
             </button>
           </Tooltip>
           <Divider layout="vertical" margin="8px" />
-          <Tooltip content={t("auto_arrange")} position="bottom">
+          <Tooltip
+            content={t(arranging ? "layout_arranging" : "auto_arrange")}
+            position="bottom"
+          >
             <button
               aria-label={t("auto_arrange")}
               className="py-1 px-2 hover-2 rounded-sm text-xl -mt-0.5 disabled:opacity-50"
               onClick={autoArrangeTables}
-              disabled={layout.readOnly}
+              aria-busy={arranging}
+              disabled={layout.readOnly || arranging}
             >
               <i className="fa-solid fa-wand-magic-sparkles" />
             </button>

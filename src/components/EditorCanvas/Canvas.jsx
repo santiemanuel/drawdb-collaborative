@@ -56,6 +56,11 @@ import {
 } from "../../utils/rect";
 import { State, noteWidth } from "../../data/constants";
 import { nanoid } from "nanoid";
+import {
+  getLayoutGeometrySignature,
+  getLayoutObstacles,
+  getLayoutTables,
+} from "../../utils/autoArrange";
 
 const noHiddenAreas = {
   areaHiddenTableIds: new Set(),
@@ -86,6 +91,20 @@ export default function Canvas() {
   const { notes, updateNote } = useNotes();
   const { layout } = useLayout();
   const { settings } = useSettings();
+  // One global geometry signature invalidates all persisted routes when any
+  // obstacle changes, not only when a relationship's endpoint tables move.
+  const layoutGeometrySignature = useMemo(
+    () =>
+      getLayoutGeometrySignature(
+        getLayoutTables(tables, areas),
+        relationships,
+        settings,
+        {
+          obstacles: getLayoutObstacles(notes, views, tables, settings),
+        },
+      ),
+    [tables, areas, relationships, settings, notes, views],
+  );
   const { setUndoStack, setRedoStack } = useUndoRedo();
   const { transform, setTransform } = useTransform();
   const {
@@ -1291,6 +1310,7 @@ export default function Canvas() {
               <Relationship
                 key={e.id}
                 data={e}
+                layoutGeometrySignature={layoutGeometrySignature}
                 startTable={tablesById.get(e.startTableId)}
                 endTable={tablesById.get(e.endTableId)}
                 startRelatedFieldKeys={relatedFieldKeysByTable.get(

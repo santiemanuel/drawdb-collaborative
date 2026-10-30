@@ -6,15 +6,17 @@ import {
   Spin,
   Toast,
 } from "@douyinfe/semi-ui";
+import { useParams } from "react-router-dom";
 import { saveAs } from "file-saver";
 import { Parser } from "node-sql-parser";
 import { Parser as OracleParser } from "oracle-sql-parser";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DB, MODAL, STATUS } from "../../../data/constants";
 import { databases } from "../../../data/databases";
 import {
   useAreas,
+  useLayout,
   useDiagram,
   useEnums,
   useNavigateWithParams,
@@ -71,7 +73,16 @@ export default function Modal({
   onBack,
 }) {
   const { t, i18n } = useTranslation();
-  const { setTables, setRelationships, database, setSqlHeader } = useDiagram();
+  const {
+    tables: currentTables,
+    relationships: currentRelationships,
+    setTables,
+    setRelationships,
+    database,
+    setSqlHeader,
+  } = useDiagram();
+  const { id: diagramId } = useParams();
+  const { layout } = useLayout();
   const { setNotes } = useNotes();
   const { setAreas } = useAreas();
   const { setTypes } = useTypes();
@@ -98,6 +109,25 @@ export default function Modal({
   const [saveAsTitle, setSaveAsTitle] = useState(title);
   const [aiImporting, setAiImporting] = useState(false);
   const navigate = useNavigateWithParams();
+  const importBusy = useRef(false);
+  const importAbort = useRef(null);
+  const importState = useRef(null);
+  importState.current = {
+    modal,
+    diagramId,
+    database,
+    importSource,
+    currentTables,
+    currentRelationships,
+    readOnly: layout.readOnly,
+  };
+  useEffect(
+    () => () => {
+      importAbort.current?.abort();
+    },
+    [modal, diagramId],
+  );
+
   const { importSqlWithAi } = useExtensions();
 
   useEffect(() => {
@@ -284,18 +314,69 @@ export default function Modal({
           return;
         }
 
-        const positions = new Map(
-          autoArrange(imported.tables, imported.relationships, settings).map(
-            (p) => [p.id, p],
-          ),
-        );
+        if (importBusy.current || layout.readOnly) return;
+        importBusy.current = true;
+        const initial = importState.current;
+        const controller = new AbortController();
+        importAbort.current = controller;
+        let result;
+        try {
+          result = await autoArrange(
+            imported.tables,
+            imported.relationships,
+            settings,
+            { signal: controller.signal },
+          );
+        } catch {
+          if (controller.signal.aborted) return;
+          Toast.error(
+            t("layout_failed", {
+              defaultValue:
+                "Could not arrange the diagram. Your changes were preserved.",
+            }),
+          );
+          return;
+        } finally {
+          importBusy.current = false;
+          if (importAbort.current === controller) importAbort.current = null;
+        }
+        const latest = importState.current;
+        if (
+          !latest ||
+          controller.signal.aborted ||
+          latest.readOnly ||
+          latest.modal !== initial.modal ||
+          latest.diagramId !== initial.diagramId ||
+          latest.database !== initial.database ||
+          latest.importSource !== initial.importSource ||
+          latest.currentTables !== initial.currentTables ||
+          latest.currentRelationships !== initial.currentRelationships
+        )
+          return;
+        const positions = new Map(result.positions.map((p) => [p.id, p]));
         const tables = imported.tables.map((table) => ({
           ...table,
-          x: positions.get(table.id).x,
-          y: positions.get(table.id).y,
+          x: positions.get(table.id)?.x ?? table.x,
+          y: positions.get(table.id)?.y ?? table.y,
         }));
-
-        applyImportedDiagram({ ...imported, tables });
+        const routes = new Map(
+          result.routes.map((route) => [
+            route.id,
+            {
+              version: 1,
+              paths: route.paths,
+              signature: result.signature,
+            },
+          ]),
+        );
+        applyImportedDiagram({
+          ...imported,
+          tables,
+          relationships: imported.relationships.map((rel) => ({
+            ...rel,
+            layoutRoute: routes.get(rel.id),
+          })),
+        });
         if (tables.length) fitToView(tables);
 
         const skipped = ["views", "indexes", "checks"]

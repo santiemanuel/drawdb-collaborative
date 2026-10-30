@@ -6,6 +6,12 @@ const english = {
 
 const en = {
   translation: {
+    layout_partial_routes:
+      "Tables were arranged. Some constrained relationships use live routing; moving pinned obstacles may improve them.",
+    layout_locked: "Another editor is using a table. Try again shortly.",
+    layout_failed:
+      "Could not arrange the diagram. Your changes were preserved.",
+    layout_arranging: "Arranging with ELK…",
     mobile_navigate: "Navigate",
     mobile_edit: "Edit objects",
     collaboration_people: "People in this diagram",

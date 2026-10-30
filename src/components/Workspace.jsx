@@ -1,3 +1,4 @@
+import { getSaveCompletionState } from "../utils/layoutTransaction";
 import { useProjectAccess } from "../context/ProjectAccessContext";
 import { useState, useEffect, useCallback, useRef, createContext } from "react";
 import { v4 as uuidv4 } from "uuid";
@@ -55,6 +56,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
   const [toolbarContainer, setToolbarContainer] = useState(null);
   const [width, setWidth] = useState(SIDEPANEL_MIN_WIDTH);
   const [lastSaved, setLastSaved] = useState("");
+  const [saveOutcome, setSaveOutcome] = useState(null);
   const [showSelectDbModal, setShowSelectDbModal] = useState(false);
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [selectedDb, setSelectedDb] = useState("");
@@ -137,6 +139,9 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     ],
   );
 
+  const latestSaveInputRef = useRef(null);
+  latestSaveInputRef.current = { buildDocument, title, loadedDiagramId };
+
   const applyDiagramState = useCallback(
     (serverDiagram, { remote = false } = {}) => {
       const diagram = serverDiagram.document ?? serverDiagram;
@@ -186,6 +191,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     const targetId = isNew
       ? (pendingNewIdRef.current ??= uuidv4())
       : loadedDiagramId;
+    const startedAt = performance.now();
     try {
       if (isNew) {
         const created = await diagramApi.create({
@@ -207,10 +213,27 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
         });
         versionRef.current = updated.version;
       }
-      setSaveState(State.SAVED);
+      setSaveOutcome({ diagramId: loadedDiagramId, startedAt });
+      // An older request must not cancel the debounce for a newer local edit.
+      const latest = latestSaveInputRef.current;
+      const completion = getSaveCompletionState(
+        { loadedDiagramId, buildDocument, title },
+        latest,
+      );
+      if (completion !== "ignore")
+        setSaveState(completion === "saved" ? State.SAVED : State.SAVING);
       setLastSaved(new Date().toLocaleString());
     } catch (error) {
-      if (error.diagram) applyDiagramState(error.diagram, { remote: true });
+      const latest = latestSaveInputRef.current;
+      if (latest.loadedDiagramId !== loadedDiagramId) return;
+      // A conflict for an older snapshot must not overwrite edits made meanwhile.
+      if (
+        error.diagram &&
+        latest.buildDocument === buildDocument &&
+        latest.title === title
+      )
+        applyDiagramState(error.diagram, { remote: true });
+      setSaveOutcome({ diagramId: loadedDiagramId, startedAt, failed: true });
       console.warn("server autosave failed:", error);
       setSaveState(State.ERROR);
     }
@@ -418,6 +441,7 @@ export default function WorkSpace({ forcedDiagramId } = {}) {
     <div className="editor-workspace h-full flex flex-col overflow-hidden theme">
       <IdContext.Provider value={{ gistId, setGistId, version, setVersion }}>
         <ControlPanel
+          saveOutcome={saveOutcome}
           collaborationPanel={
             isDiagram && loadedDiagramId ? <CollaborationPanel inline /> : null
           }

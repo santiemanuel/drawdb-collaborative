@@ -45,7 +45,27 @@ test("new upstream diagram fields survive API saves and collaborative snapshots"
   const document = {
     database: "postgres",
     tables: [{ id: 0, width: 420, areaId: "area-1", fields: [] }],
-    references: [],
+    references: [
+      {
+        id: "route-roundtrip",
+        startTableId: 0,
+        endTableId: 0,
+        startFieldId: 0,
+        endFieldId: 0,
+        layoutRoute: {
+          version: 1,
+          signature: "test-geometry",
+          paths: [
+            [
+              { x: 420, y: 70 },
+              { x: 460, y: 70 },
+              { x: 460, y: 110 },
+              { x: 420, y: 110 },
+            ],
+          ],
+        },
+      },
+    ],
     areas: [{ id: "area-1", x: 0, y: 0, width: 800, height: 400 }],
     views: [{ id: "view-1", name: "active_users", baseTableId: 0 }],
     sqlHeader: "SET search_path TO public;",

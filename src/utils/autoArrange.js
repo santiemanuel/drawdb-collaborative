@@ -1,199 +1,123 @@
-import { graphlib, layout } from "@dagrejs/dagre";
-import { tableWidth as defaultTableWidth } from "../data/constants";
+import {
+  tableFieldHeight,
+  tableHeaderHeight,
+  noteWidth,
+} from "../data/constants";
 import {
   getRelatedFieldKeysByTable,
   getTableHeight,
   getTableWidth,
+  getVisibleFieldEntries,
+  getRelationshipFields,
+  getFieldOffsetY,
+  getCommentHeight,
 } from "./utils";
+import { getViewHeight, getViewWidth, resolveViewColumns } from "./views";
+import { geometrySignature, layoutGeometry } from "./elkLayout.js";
 
-const nodeSep = 60;
-const rankSep = 110;
-const isolatedGap = 60;
-const targetRatio = 16 / 9;
-const minRatio = 1 / 3;
-const maxRatio = 4;
-
-export function autoArrange(tables, relationships, settings) {
-  const movable = tables.filter((table) => !table.locked);
-  const movableIds = new Set(movable.map((table) => table.id));
-
-  const connectedIds = new Set();
-  for (const r of relationships) {
-    if (
-      r.startTableId !== r.endTableId &&
-      movableIds.has(r.startTableId) &&
-      movableIds.has(r.endTableId)
-    ) {
-      connectedIds.add(r.startTableId);
-      connectedIds.add(r.endTableId);
-    }
-  }
-
-  const relatedFieldKeysByTable = getRelatedFieldKeysByTable(relationships);
-  const sizeOf = (table) => ({
-    width: getTableWidth(table),
-    height: getTableHeight(
+export function getLayoutGeometry(tables, relationships, settings = {}) {
+  const related = getRelatedFieldKeysByTable(relationships);
+  const nodes = tables.map((table) => {
+    const width = getTableWidth(table),
+      entries = getVisibleFieldEntries(table, related.get(table.id));
+    const fields = entries.map((e) => e.field);
+    const height = getTableHeight(
       table,
       settings.showComments,
-      relatedFieldKeysByTable.get(table.id),
-    ),
-  });
-
-  const connected = movable.filter((table) => connectedIds.has(table.id));
-  const isolated = movable.filter((table) => !connectedIds.has(table.id));
-
-  const graph = new graphlib.Graph();
-  graph.setGraph({ rankdir: "LR", nodesep: nodeSep, ranksep: rankSep });
-  graph.setDefaultEdgeLabel(() => ({}));
-
-  for (const table of connected) {
-    graph.setNode(String(table.id), sizeOf(table));
-  }
-  for (const r of relationships) {
-    if (
-      r.startTableId !== r.endTableId &&
-      connectedIds.has(r.startTableId) &&
-      connectedIds.has(r.endTableId)
-    ) {
-      graph.setEdge(String(r.startTableId), String(r.endTableId));
-    }
-  }
-
-  layout(graph);
-
-  const placed = connected.map((table) => {
-    const node = graph.node(String(table.id));
+      related.get(table.id),
+    );
+    const ports = entries.map(({ field, originalIndex }, index) => ({
+      id: field.id,
+      index: originalIndex,
+      y:
+        tableHeaderHeight +
+        getCommentHeight(table.comment, width, settings.showComments) +
+        getFieldOffsetY(fields, index, width, settings.showComments) +
+        tableFieldHeight / 2,
+    }));
     return {
       id: table.id,
-      x: node.x - node.width / 2,
-      y: node.y - node.height / 2,
-      width: node.width,
-      height: node.height,
-      rank: Math.round(node.x),
+      x: table.x ?? 0,
+      y: table.y ?? 0,
+      width,
+      height,
+      locked: !!table.locked,
+      hidden: !!table.hidden,
+      ports,
     };
   });
-
-  const extent = () => ({
-    width: Math.max(0, ...placed.map((p) => p.x + p.width)),
-    height: Math.max(0, ...placed.map((p) => p.y + p.height)),
-  });
-  let { width: maxX, height: maxY } = extent();
-
-  const ratio = maxX / maxY;
-  if (placed.length > 1 && (ratio < minRatio || ratio > maxRatio)) {
-    const ranks = new Map();
-    for (const p of [...placed].sort((a, b) => a.y - b.y)) {
-      if (!ranks.has(p.rank)) ranks.set(p.rank, []);
-      ranks.get(p.rank).push(p);
-    }
-
-    const rankOrder = [...ranks.keys()].sort((a, b) => b - a);
-    const buildColumns = (heightLimit) => {
-      const columns = [];
-      for (const rank of rankOrder) {
-        const nodes = ranks.get(rank);
-        const rankHeight = nodes.reduce(
-          (sum, p) => sum + p.height + nodeSep,
-          0,
-        );
-        const columnHeight =
-          rankHeight / Math.max(1, Math.ceil(rankHeight / heightLimit));
-        let column = null;
-        for (const p of nodes) {
-          if (!column || column.height + p.height > columnHeight) {
-            column = { nodes: [], width: 0, height: 0 };
-            columns.push(column);
-          }
-          column.nodes.push({ p, offset: column.height });
-          column.height += p.height + nodeSep;
-          column.width = Math.max(column.width, p.width);
-        }
-      }
-      return columns;
-    };
-
-    const placeColumns = (columns, bandWidth) => {
-      const slots = [];
-      let x = 0;
-      let y = 0;
-      let width = 0;
-      let bandHeight = 0;
-      for (const column of columns) {
-        let gap = x === 0 ? 0 : rankSep;
-        if (x > 0 && x + gap + column.width > bandWidth) {
-          y += bandHeight + rankSep;
-          x = 0;
-          gap = 0;
-          bandHeight = 0;
-        }
-        slots.push({ column, x: x + gap, y });
-        x += gap + column.width;
-        width = Math.max(width, x);
-        bandHeight = Math.max(bandHeight, column.height - nodeSep);
-      }
-      const height = y + bandHeight;
-      return {
-        slots,
-        score: Math.abs(Math.log(width / height / targetRatio)),
-      };
-    };
-
-    const tallest = Math.max(...placed.map((p) => p.height + nodeSep));
-    const longest = Math.max(
-      ...[...ranks.values()].map((nodes) =>
-        nodes.reduce((sum, p) => sum + p.height + nodeSep, 0),
-      ),
-    );
-    let best = null;
-    for (let step = 0; step <= 12; step++) {
-      const columns = buildColumns(
-        tallest * Math.pow(longest / tallest, step / 12),
-      );
-      const totalWidth =
-        columns.reduce((sum, column) => sum + column.width + rankSep, 0) -
-        rankSep;
-      for (let bands = 1; bands <= columns.length; bands++) {
-        const candidate = placeColumns(columns, totalWidth / bands + 1);
-        if (!best || candidate.score < best.score) best = candidate;
-      }
-    }
-    for (const { column, x, y } of best.slots) {
-      for (const { p, offset } of column.nodes) {
-        p.x = x;
-        p.y = y + offset;
-      }
-    }
-
-    ({ width: maxX, height: maxY } = extent());
-  }
-
-  const positions = placed.map(({ id, x, y }) => ({ id, x, y }));
-
-  if (isolated.length > 0) {
-    const isolatedArea = isolated.reduce((sum, table) => {
-      const { width, height } = sizeOf(table);
-      return sum + (width + isolatedGap) * (height + isolatedGap);
-    }, 0);
-    const rowWidth = Math.max(
-      maxX,
-      Math.sqrt(isolatedArea * targetRatio),
-      4 * defaultTableWidth + 3 * isolatedGap,
-    );
-    let x = 0;
-    let y = connected.length > 0 ? maxY + rankSep : 0;
-    let rowHeight = 0;
-    for (const table of isolated) {
-      const { width, height } = sizeOf(table);
-      if (x > 0 && x + width > rowWidth) {
-        x = 0;
-        y += rowHeight + isolatedGap;
-        rowHeight = 0;
-      }
-      positions.push({ id: table.id, x, y });
-      x += width + isolatedGap;
-      rowHeight = Math.max(rowHeight, height);
-    }
-  }
-
-  return positions;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const anchor = (node, fieldId) =>
+    node?.ports.find((p) => p.id === fieldId || p.index === fieldId)?.y ??
+    tableHeaderHeight / 2;
+  const edges = relationships.map((r) => ({
+    id: r.id,
+    source: r.startTableId,
+    target: r.endTableId,
+    pairs: getRelationshipFields(r).map((pair) => ({
+      startFieldId: pair.startFieldId,
+      endFieldId: pair.endFieldId,
+      startY: anchor(byId.get(r.startTableId), pair.startFieldId),
+      endY: anchor(byId.get(r.endTableId), pair.endFieldId),
+    })),
+  }));
+  return { nodes, edges };
 }
+
+export function getLayoutGeometrySignature(
+  tables,
+  relationships,
+  settings,
+  { obstacles = [] } = {},
+) {
+  const { nodes, edges } = getLayoutGeometry(tables, relationships, settings);
+  return geometrySignature(nodes, edges, obstacles);
+}
+
+export async function autoArrange(
+  tables,
+  relationships,
+  settings,
+  options = {},
+) {
+  const { nodes, edges } = getLayoutGeometry(tables, relationships, settings);
+  return layoutGeometry(nodes, edges, options);
+}
+
+// Keep obstacles identical to the rectangles used by the canvas and fit-to-view.
+export function getLayoutObstacles(
+  notes = [],
+  views = [],
+  tables = [],
+  settings = {},
+) {
+  return [
+    ...notes
+      .filter((n) => !n.hidden)
+      .map((n) => ({
+        x: n.x,
+        y: n.y,
+        width: n.width ?? noteWidth,
+        height: n.height,
+      })),
+    ...views
+      .filter((v) => !v.hidden)
+      .map((v) => ({
+        x: v.x,
+        y: v.y,
+        width: getViewWidth(v),
+        height: getViewHeight(
+          v,
+          resolveViewColumns(v, tables),
+          settings.showComments,
+        ),
+      })),
+  ].filter(
+    (r) =>
+      [r.x, r.y, r.width, r.height].every(Number.isFinite) &&
+      r.width > 0 &&
+      r.height > 0,
+  );
+}
+
+export { getLayoutTables } from "./elkLayout.js";

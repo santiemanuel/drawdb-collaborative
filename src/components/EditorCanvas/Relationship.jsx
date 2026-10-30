@@ -10,6 +10,7 @@ import {
 } from "react";
 import { Cardinality, ObjectType, Tab } from "../../data/constants";
 import { calcPath, calcCompositePath } from "../../utils/calcPath";
+import { getLayoutRouteGeometry } from "../../utils/layoutRoute";
 import { useSettings, useLayout, useSelect, useDiagram } from "../../hooks";
 import { SelectActionsContext } from "../../context/SelectContext";
 import { useTranslation } from "react-i18next";
@@ -30,6 +31,7 @@ export default memo(function Relationship({
   endTable,
   startRelatedFieldKeys,
   endRelatedFieldKeys,
+  layoutGeometrySignature,
 }) {
   const { layout } = useLayout();
   const { setSelectedElement } = useContext(SelectActionsContext);
@@ -56,6 +58,7 @@ export default memo(function Relationship({
       endTable={endTable}
       startRelatedFieldKeys={startRelatedFieldKeys}
       endRelatedFieldKeys={endRelatedFieldKeys}
+      layoutGeometrySignature={layoutGeometrySignature}
       onEdit={edit}
     />
   );
@@ -100,6 +103,7 @@ const RelationshipPath = memo(function RelationshipPath({
   endTable,
   startRelatedFieldKeys,
   endRelatedFieldKeys,
+  layoutGeometrySignature,
   onEdit,
 }) {
   const { settings } = useSettings();
@@ -146,10 +150,15 @@ const RelationshipPath = memo(function RelationshipPath({
     };
   }, [startTable, endTable, startRelatedFieldKeys, endRelatedFieldKeys, data]);
 
+  const routedGeometry = useMemo(
+    () => getLayoutRouteGeometry(data.layoutRoute, layoutGeometrySignature),
+    [data.layoutRoute, layoutGeometrySignature],
+  );
+
   const isComposite = (pathValues?.startFieldIndices?.length ?? 0) > 1;
 
   const composite = useMemo(() => {
-    if (!pathValues || !isComposite) return null;
+    if (!pathValues || !isComposite || routedGeometry) return null;
     return calcCompositePath(
       {
         startTable: pathValues.startTable,
@@ -160,13 +169,14 @@ const RelationshipPath = memo(function RelationshipPath({
       1,
       settings.showComments,
     );
-  }, [pathValues, isComposite, settings.showComments]);
+  }, [pathValues, isComposite, settings.showComments, routedGeometry]);
 
   const d = useMemo(() => {
     if (!pathValues) return null;
+    if (routedGeometry) return routedGeometry.path;
     if (composite) return composite.path;
     return calcPath(pathValues, 1, settings.showComments);
-  }, [pathValues, composite, settings.showComments]);
+  }, [pathValues, composite, settings.showComments, routedGeometry]);
 
   const pathRef = useRef();
   const labelRef = useRef();
@@ -184,10 +194,11 @@ const RelationshipPath = memo(function RelationshipPath({
     const labelHeight = labelBox?.height ?? 0;
 
     let labelPoint, startPoint, endPoint;
-    if (composite) {
-      labelPoint = composite.labelPoint;
-      startPoint = composite.startCardinality;
-      endPoint = composite.endCardinality;
+    const geometry = routedGeometry ?? composite;
+    if (geometry) {
+      labelPoint = geometry.labelPoint;
+      startPoint = geometry.startCardinality;
+      endPoint = geometry.endCardinality;
     } else {
       const path = pathRef.current;
       const pathLength = path.getTotalLength();
@@ -204,7 +215,13 @@ const RelationshipPath = memo(function RelationshipPath({
       start: { x: startPoint.x, y: startPoint.y },
       end: { x: endPoint.x, y: endPoint.y },
     });
-  }, [d, composite, data.name, settings.showRelationshipLabels]);
+  }, [
+    d,
+    composite,
+    routedGeometry,
+    data.name,
+    settings.showRelationshipLabels,
+  ]);
 
   let cardinalityStart = "1";
   let cardinalityEnd = "1";
@@ -251,6 +268,7 @@ const RelationshipPath = memo(function RelationshipPath({
         ref={pathRef}
         d={d}
         className="relationship-path"
+        data-routing={routedGeometry ? "elk" : "manual"}
         style={{ stroke: hovered ? undefined : data.color }}
         fill="none"
         cursor="pointer"
