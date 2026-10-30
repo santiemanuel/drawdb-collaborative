@@ -18,9 +18,9 @@ test("serves safely encoded backend configuration at runtime without caching", a
   await new Promise((resolve) =>
     application.server.listen(0, "127.0.0.1", resolve),
   );
-  t.after(() => {
-    application.websocket.close();
-    application.server.close();
+  t.after(async () => {
+    await new Promise((resolve) => application.websocket.close(resolve));
+    await new Promise((resolve) => application.server.close(resolve));
     application.database.close();
   });
   const response = await fetch(
@@ -37,6 +37,7 @@ test("serves safely encoded backend configuration at runtime without caching", a
 
 test("new upstream diagram fields survive API saves and collaborative snapshots", async (t) => {
   const application = createApplication({ databasePath: ":memory:" });
+  const { project, headers } = seedAccount(application);
   await new Promise((resolve) =>
     application.server.listen(0, "127.0.0.1", resolve),
   );
@@ -51,9 +52,10 @@ test("new upstream diagram fields survive API saves and collaborative snapshots"
   };
   const createdResponse = await fetch(`${base}/api/diagrams`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({
       id: "upstream-fields",
+      projectId: project.id,
       name: "Upstream fields",
       document,
     }),
@@ -61,11 +63,12 @@ test("new upstream diagram fields survive API saves and collaborative snapshots"
   assert.equal(createdResponse.status, 201);
   const socket = await openSocket(
     base.replace("http", "ws") + "/ws/diagrams/upstream-fields",
+    headers,
   );
-  t.after(() => {
+  t.after(async () => {
     socket.close();
-    application.websocket.close();
-    application.server.close();
+    await new Promise((resolve) => application.websocket.close(resolve));
+    await new Promise((resolve) => application.server.close(resolve));
     application.database.close();
   });
   const joined = waitForMessage(socket, (message) => message.type === "joined");
@@ -106,7 +109,7 @@ test("new upstream diagram fields survive API saves and collaborative snapshots"
   );
   assert.deepEqual((await applied).operation.payload.document, updated);
   const reloaded = await (
-    await fetch(`${base}/api/diagrams/upstream-fields`)
+    await fetch(`${base}/api/diagrams/upstream-fields`, { headers })
   ).json();
   assert.deepEqual(reloaded.document, updated);
   assert.equal(reloaded.version, 2);
@@ -129,9 +132,9 @@ function waitForMessage(socket, predicate) {
   });
 }
 
-function openSocket(url) {
+function openSocket(url, headers) {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url);
+    const socket = new WebSocket(url, { headers });
     socket.once("open", () => resolve(socket));
     socket.once("error", reject);
   });
@@ -139,22 +142,28 @@ function openSocket(url) {
 
 test("camera awareness is room-scoped, validated, transient and available to late joiners", async (t) => {
   const application = createApplication({ databasePath: ":memory:" });
+  const { project, headers } = seedAccount(application);
   for (const id of ["camera-room", "other-room"]) {
-    application.store.create({ id, name: id, document: { tables: [] } });
+    application.store.create({
+      id,
+      projectId: project.id,
+      name: id,
+      document: { tables: [] },
+    });
   }
   await new Promise((resolve) =>
     application.server.listen(0, "127.0.0.1", resolve),
   );
   const base = `ws://127.0.0.1:${application.server.address().port}/ws/diagrams/`;
   const sockets = [];
-  t.after(() => {
+  t.after(async () => {
     sockets.forEach((socket) => socket.terminate());
-    application.websocket.close();
-    application.server.close();
+    await new Promise((resolve) => application.websocket.close(resolve));
+    await new Promise((resolve) => application.server.close(resolve));
     application.database.close();
   });
   const connect = async (diagramId, clientId) => {
-    const socket = await openSocket(base + diagramId);
+    const socket = await openSocket(base + diagramId, headers);
     sockets.push(socket);
     const joined = waitForMessage(
       socket,
@@ -345,8 +354,10 @@ test("table edit leases are exclusive and expire", () => {
 
 test("WebSocket table locks reject concurrent edits", async (t) => {
   const application = createApplication({ databasePath: ":memory:" });
+  const { project, headers } = seedAccount(application);
   application.store.create({
     id: "diagram-lock-test",
+    projectId: project.id,
     name: "Lock test",
     document: { tables: [{ id: 0, x: 0, y: 0 }] },
   });
@@ -355,13 +366,13 @@ test("WebSocket table locks reject concurrent edits", async (t) => {
   );
   const { port } = application.server.address();
   const url = `ws://127.0.0.1:${port}/ws/diagrams/diagram-lock-test`;
-  const clientA = await openSocket(url);
-  const clientB = await openSocket(url);
-  t.after(() => {
+  const clientA = await openSocket(url, headers);
+  const clientB = await openSocket(url, headers);
+  t.after(async () => {
     clientA.close();
     clientB.close();
-    application.websocket.close();
-    application.server.close();
+    await new Promise((resolve) => application.websocket.close(resolve));
+    await new Promise((resolve) => application.server.close(resolve));
     application.database.close();
   });
 
@@ -457,3 +468,21 @@ test("WebSocket table locks reject concurrent edits", async (t) => {
   );
   assert.equal((await grantedB).lock.clientId, "client-b");
 });
+
+function seedAccount(application) {
+  const user = application.access.upsertGoogle({
+    sub: "test-subject",
+    email: "owner@example.test",
+    name: "Test owner",
+    email_verified: true,
+  });
+  const session = application.access.createSession(user.id);
+  const project = application.access.createProject("Test project", user.id);
+  return {
+    project,
+    headers: {
+      Cookie: `drawdb_session=${session}`,
+      Origin: "http://localhost:3000",
+    },
+  };
+}

@@ -8,14 +8,15 @@
     "dev:client": "vite",
     "dev:server": "node --watch server/index.js",
     "start": "node server/index.js",
-    "check:server": "node --check server/index.js && node --check server/database.js && node --check server/tableLocks.js && node --check server/websocket.js",
-    "test:server": "node --test server/server.test.js",
+    "check:server": "node --check server/index.js && node --check server/database.js && node --check server/access.js && node --check server/auth.js && node --check server/projects.js && node --check server/tableLocks.js && node --check server/websocket.js",
+    "test:server": "node --test server/*.test.js",
     "test:import": "node --test src/utils/importSQL/normalize.test.js",
     "test:collaboration": "node --test src/collaboration/*.test.js",
     "build": "vite build",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
-    "prepare": "husky"
+    "prepare": "husky",
+    "claim:legacy": "node scripts/claim-legacy-diagrams.js"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",

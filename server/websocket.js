@@ -19,17 +19,34 @@ function send(socket, message) {
   }
 }
 
-export function attachCollaborationServer(server, store) {
+export function attachCollaborationServer(server, store, { access, auth }) {
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_MESSAGE_BYTES,
   });
   const rooms = new Map();
   const tableLocks = createTableLockManager();
+  const permissionFor = (socket) =>
+    access.diagramAccess(
+      socket.diagramId,
+      auth.userFor(socket.request),
+      socket.shareToken,
+    );
+  const ensureAccess = (socket) => {
+    const permission = permissionFor(socket);
+    if (
+      !permission ||
+      (socket.authorizedRole && permission.role !== socket.authorizedRole)
+    ) {
+      socket.close(1008, "Access revoked or permissions changed");
+      return null;
+    }
+    return permission;
+  };
 
   const broadcast = (diagramId, message, except = null) => {
     for (const client of rooms.get(diagramId) || []) {
-      if (client !== except) send(client, message);
+      if (client !== except && ensureAccess(client)) send(client, message);
     }
   };
 
@@ -59,10 +76,22 @@ export function attachCollaborationServer(server, store) {
     const url = new URL(request.url, "http://localhost");
     const match = url.pathname.match(/^\/ws\/diagrams\/([^/]+)$/);
     const diagramId = match?.[1];
+    const shareToken = url.searchParams.get("share");
+    if (!auth.sameOrigin(request)) {
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    const permission = access.diagramAccess(
+      diagramId,
+      auth.userFor(request),
+      shareToken,
+    );
     if (
       !diagramId ||
       !DIAGRAM_ID_PATTERN.test(diagramId) ||
-      !store.get(diagramId)
+      !store.get(diagramId) ||
+      !permission
     ) {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
@@ -70,6 +99,9 @@ export function attachCollaborationServer(server, store) {
     }
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws.diagramId = diagramId;
+      ws.request = request;
+      ws.shareToken = shareToken;
+      ws.authorizedRole = permission.role;
       wss.emit("connection", ws, request);
     });
   });
@@ -84,6 +116,8 @@ export function attachCollaborationServer(server, store) {
     });
 
     socket.on("message", (raw) => {
+      const permission = ensureAccess(socket);
+      if (!permission) return;
       let message;
       try {
         message = JSON.parse(raw.toString());
@@ -110,12 +144,42 @@ export function attachCollaborationServer(server, store) {
           });
           return;
         }
-        socket.participant = message.participant;
+        // Reserve clientId within a room to prevent lock/operation impersonation.
+        if (
+          [...(rooms.get(diagramId) || [])].some(
+            (other) =>
+              other !== socket &&
+              other.participant?.clientId === message.participant.clientId,
+          )
+        ) {
+          send(socket, {
+            type: MESSAGE_TYPES.ERROR,
+            message: "Client ID already in use",
+          });
+          return;
+        }
+        if (
+          socket.participant &&
+          socket.participant.clientId !== message.participant.clientId
+        ) {
+          send(socket, {
+            type: MESSAGE_TYPES.ERROR,
+            message: "Client ID cannot change",
+          });
+          return;
+        }
+        socket.participant = {
+          ...message.participant,
+          displayName: (permission.user?.name || "Guest viewer").slice(0, 64),
+          userId: permission.user?.id || null,
+        };
         const diagram = store.get(diagramId);
         send(socket, {
           type: MESSAGE_TYPES.JOINED,
           diagramId,
           version: diagram.version,
+          role: permission.role,
+          participant: socket.participant,
         });
         if (message.lastVersion !== diagram.version) {
           send(socket, { type: MESSAGE_TYPES.SNAPSHOT, diagramId, ...diagram });
@@ -137,6 +201,20 @@ export function attachCollaborationServer(server, store) {
         return;
       }
 
+      const writeTypes = [
+        MESSAGE_TYPES.OPERATION,
+        MESSAGE_TYPES.OPERATION_PREVIEW,
+        MESSAGE_TYPES.TABLE_LOCK_ACQUIRE,
+        MESSAGE_TYPES.TABLE_LOCK_RENEW,
+        MESSAGE_TYPES.TABLE_LOCK_RELEASE,
+      ];
+      if (permission.role === "viewer" && writeTypes.includes(message.type)) {
+        send(socket, {
+          type: MESSAGE_TYPES.ERROR,
+          message: "Read-only access",
+        });
+        return;
+      }
       if (message.type === MESSAGE_TYPES.OPERATION) {
         const valid =
           CLIENT_ID_PATTERN.test(message.clientId || "") &&
@@ -145,7 +223,11 @@ export function attachCollaborationServer(server, store) {
           Number.isInteger(message.baseVersion) &&
           isPlainObject(message.operation) &&
           message.operation.type === "snapshot.replace" &&
-          isPlainObject(message.operation.payload?.document);
+          isPlainObject(message.operation.payload?.document) &&
+          (message.operation.payload.name === undefined ||
+            (typeof message.operation.payload.name === "string" &&
+              message.operation.payload.name.trim().length > 0 &&
+              message.operation.payload.name.length <= 200));
         if (!valid) {
           send(socket, {
             type: MESSAGE_TYPES.ERROR,
@@ -160,6 +242,10 @@ export function attachCollaborationServer(server, store) {
           baseVersion: message.baseVersion,
           operationId: message.operationId,
         });
+        if (result.status === "not_found") {
+          socket.close(1008, "Diagram removed");
+          return;
+        }
         if (result.status === "conflict") {
           send(socket, {
             type: MESSAGE_TYPES.RESYNC_REQUIRED,
@@ -341,6 +427,7 @@ export function attachCollaborationServer(server, store) {
 
   const heartbeat = setInterval(() => {
     for (const socket of wss.clients) {
+      if (!ensureAccess(socket)) continue;
       if (!socket.isAlive) {
         socket.terminate();
         continue;
@@ -351,6 +438,15 @@ export function attachCollaborationServer(server, store) {
   }, 30_000);
   heartbeat.unref();
   const lockSweep = setInterval(() => {
+    for (const socket of wss.clients) {
+      const permission = ensureAccess(socket);
+      if (
+        permission?.role === "viewer" &&
+        socket.participant &&
+        tableLocks.releaseClient(socket.diagramId, socket.participant.clientId)
+      )
+        broadcastTableLocks(socket.diagramId);
+    }
     for (const diagramId of tableLocks.sweep()) {
       broadcastTableLocks(diagramId);
     }

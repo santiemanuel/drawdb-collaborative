@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
 
@@ -17,6 +18,35 @@ export function openDatabase(databasePath = process.env.DATABASE_PATH) {
   }
 
   const db = new Database(resolvedPath);
+  const oldColumns = db.prepare("PRAGMA table_info(diagrams)").all();
+  if (
+    resolvedPath !== ":memory:" &&
+    oldColumns.length &&
+    !oldColumns.some((column) => column.name === "project_id")
+  ) {
+    const backupPath = `${resolvedPath}.before-projects-${Date.now()}-${crypto.randomUUID()}.sqlite`;
+    try {
+      // VACUUM INTO reads a consistent snapshot, including committed WAL pages.
+      // It refuses to replace an existing file. No schema writes happen first.
+      db.prepare("VACUUM INTO ?").run(backupPath);
+      const backup = new Database(backupPath, {
+        readonly: true,
+        fileMustExist: true,
+      });
+      try {
+        if (backup.pragma("quick_check", { simple: true }) !== "ok")
+          throw new Error("Backup integrity check failed");
+      } finally {
+        backup.close();
+      }
+      console.log(`Created pre-migration SQLite backup: ${backupPath}`);
+    } catch (error) {
+      db.close();
+      throw new Error(
+        `Database migration aborted: unable to create a verified pre-migration backup (${error.message}). Check data-volume space and permissions.`,
+      );
+    }
+  }
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(`
@@ -38,12 +68,19 @@ export function openDatabase(databasePath = process.env.DATABASE_PATH) {
       FOREIGN KEY (diagram_id) REFERENCES diagrams(id) ON DELETE CASCADE
     );
   `);
+  if (
+    !db
+      .prepare("PRAGMA table_info(diagrams)")
+      .all()
+      .some((c) => c.name === "project_id")
+  )
+    db.exec("ALTER TABLE diagrams ADD COLUMN project_id TEXT");
   return db;
 }
 
 export function createDiagramStore(db) {
   const selectOne = db.prepare(
-    "SELECT id, name, document, version, created_at, updated_at FROM diagrams WHERE id = ?",
+    "SELECT id, name, document, version, created_at, updated_at, project_id FROM diagrams WHERE id = ?",
   );
   const parse = (row) =>
     row ? { ...row, document: JSON.parse(row.document) } : null;
@@ -81,21 +118,21 @@ export function createDiagramStore(db) {
   );
 
   return {
-    list() {
+    list(projectId) {
       return db
         .prepare(
-          "SELECT id, name, version, created_at, updated_at FROM diagrams ORDER BY updated_at DESC",
+          "SELECT id, name, version, created_at, updated_at, project_id FROM diagrams WHERE project_id = ? ORDER BY updated_at DESC",
         )
-        .all();
+        .all(projectId);
     },
     get(id) {
       return parse(selectOne.get(id));
     },
-    create({ id, name, document }) {
+    create({ id, name, document, projectId }) {
       const now = new Date().toISOString();
       db.prepare(
-        "INSERT INTO diagrams (id, name, document, version, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)",
-      ).run(id, name, JSON.stringify(document), now, now);
+        "INSERT INTO diagrams (id, name, document, version, created_at, updated_at, project_id) VALUES (?, ?, ?, 1, ?, ?, ?)",
+      ).run(id, name, JSON.stringify(document), now, now, projectId ?? null);
       return parse(selectOne.get(id));
     },
     updateSnapshot,
