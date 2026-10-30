@@ -24,3 +24,9 @@ Google OAuth was tested with mocked provider responses, not with the production 
 ## Required live acceptance pass
 
 Use the checklist in [Dokploy rollout](DOKPLOY_ACCOUNTS_ROLLOUT.md). In particular, test two real accounts, viewer restrictions, cross-device persistence, public link access logged out, revocation in an already open tab, and the deployed commit. Do not represent a successful Git push as proof of deployment or live OAuth success.
+
+## Deployment configuration follow-up
+
+The first operator-supplied Dokploy build log passed all 32 then-current tests on Node 22 and built successfully; runtime logs separately showed missing `APP_URL`. The supplied effective Compose forwarded Google credentials only to the old OAuth proxy, and its healthcheck called the now-private `/api/diagrams`. The repository now provides `/healthz` without private data and a deployment-specific Compose example using the application login and the same mounted email allowlist, following explicit approval to replace the proxy. The image healthcheck does not override a Compose healthcheck.
+
+Additional automated regressions cover anonymous health readiness with private APIs remaining 401, exact-address file parsing, fail-closed startup/runtime file errors, intersection with inline allowlists, outsider OAuth denial, existing session revocation and active WebSocket closure when an address is removed. The Compose example is YAML-parsed; Docker is unavailable locally, so Compose engine validation and actual rollout remain operator checks. No live Google sign-in has been claimed.

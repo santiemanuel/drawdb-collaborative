@@ -1,0 +1,43 @@
+# Replacement for the supplied Dokploy Compose; keep the same Compose project.
+# Point the existing Dokploy domain to service drawdb, container port 3000.
+# Keep allowed-emails.txt beside this file. Do not run down --volumes.
+services:
+  drawdb:
+    build: .
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DATABASE_PATH: /data/drawdb.sqlite
+      NODE_OPTIONS: --max-old-space-size=256
+      APP_URL: ${APP_URL:?Set APP_URL to https://erd.code-hello.com}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?Set the existing Google client ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?Set the existing Google client secret}
+      GOOGLE_ALLOWED_EMAILS_FILE: /etc/drawdb/allowed-emails.txt
+    volumes:
+      - drawdb-data:/data
+      - ./allowed-emails.txt:/etc/drawdb/allowed-emails.txt:ro
+    expose:
+      - "3000"
+    networks:
+      - dokploy-network
+    mem_limit: 512m
+    cpus: 1
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  drawdb-data:
+  # Retained declaration only: removal of the proxy must not delete its data.
+  auth-cookie:
+
+networks:
+  dokploy-network:
+    external: true

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import { digest, token } from "./access.js";
 
 /* global process */
@@ -9,6 +10,86 @@ export function cookies(req) {
       return [p.slice(0, i).trim(), p.slice(i + 1).trim()];
     }),
   );
+}
+const MAX_ALLOWLIST_BYTES = 1024 * 1024;
+function readAllowedEmailsFile(filename) {
+  let fd;
+  try {
+    fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_ALLOWLIST_BYTES)
+      throw new Error("expected a regular file no larger than 1 MiB");
+    // Bounded reads keep a malformed/replaced mount from consuming arbitrary memory.
+    const bytes = new Uint8Array(stat.size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const read = fs.readSync(fd, bytes, length, bytes.length - length, null);
+      if (!read) break;
+      length += read;
+    }
+    if (length > stat.size)
+      throw new Error(
+        "file changed while being read; retry with the complete file",
+      );
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.subarray(0, length),
+    );
+    const entries = text
+      .split(/\r?\n/)
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => value && !value.startsWith("#"));
+    if (!entries.length)
+      throw new Error("file contains no allowed email addresses");
+    if (
+      entries.some(
+        (value) =>
+          /[*,'"]/.test(value) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+      )
+    )
+      throw new Error(
+        "each nonblank line must contain one exact email address; wildcards are not supported",
+      );
+    return new Set(entries);
+  } catch (error) {
+    throw new Error(
+      `GOOGLE_ALLOWED_EMAILS_FILE cannot be loaded safely: ${error.message}`,
+    );
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+export function createEmailPolicy(options = {}) {
+  const inline = (
+    options.allowedEmails ??
+    process.env.GOOGLE_ALLOWED_EMAILS ??
+    ""
+  )
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  const rawFile =
+    options.allowedEmailsFile ?? process.env.GOOGLE_ALLOWED_EMAILS_FILE;
+  const filename = rawFile ? rawFile.trim() : null;
+  if (rawFile && !filename)
+    throw new Error(
+      "GOOGLE_ALLOWED_EMAILS_FILE must name a readable nonempty allowlist file.",
+    );
+  // Validate configured mounts at startup, before database migrations or listening.
+  if (filename) readAllowedEmailsFile(filename);
+  return (email) => {
+    const normalized =
+      typeof email === "string" ? email.trim().toLowerCase() : "";
+    if (!normalized || (inline.length && !inline.includes(normalized)))
+      return false;
+    if (!filename) return true;
+    // No stale authorization cache: removals/replacements affect REST and existing
+    // WebSocket sessions on their next permission check. Only read this small file.
+    try {
+      return readAllowedEmailsFile(filename).has(normalized);
+    } catch {
+      return false;
+    }
+  };
 }
 export function validateAuthConfig(options = {}) {
   const configured = options.appUrl ?? process.env.APP_URL;
@@ -38,11 +119,13 @@ export function validateAuthConfig(options = {}) {
     throw new Error(
       "APP_URL must use HTTPS in production so session cookies and Google OAuth remain secure.",
     );
+  createEmailPolicy(options);
   return parsed.origin;
 }
 export function createAuth(access, options = {}) {
   const origin = validateAuthConfig(options);
   const secure = origin.startsWith("https:");
+  const emailAllowed = createEmailPolicy(options);
   const clientId = options.googleClientId ?? process.env.GOOGLE_CLIENT_ID;
   const clientSecret =
     options.googleClientSecret ?? process.env.GOOGLE_CLIENT_SECRET;
@@ -57,7 +140,15 @@ export function createAuth(access, options = {}) {
       path: "/",
       maxAge,
     });
-  const userFor = (req) => access.session(cookies(req).drawdb_session);
+  const userFor = (req) => {
+    const raw = cookies(req).drawdb_session;
+    const user = access.session(raw);
+    if (user && !emailAllowed(user.email)) {
+      access.logout(raw);
+      return null;
+    }
+    return user;
+  };
   const sameOrigin = (req) => req.headers.origin === origin;
   const csrf = (req, res, next) => {
     if (!sameOrigin(req))
@@ -195,11 +286,7 @@ export function createAuth(access, options = {}) {
           typeof profile.name !== "string"
         )
           throw new Error("Verified Google identity required");
-        const allowed = (process.env.GOOGLE_ALLOWED_EMAILS || "")
-          .split(",")
-          .map((v) => v.trim().toLowerCase())
-          .filter(Boolean);
-        if (allowed.length && !allowed.includes(profile.email.toLowerCase()))
+        if (!emailAllowed(profile.email))
           return res.redirect("/projects?authError=not_allowed");
         const user = access.upsertGoogle(profile);
         access.logout(cookies(req).drawdb_session);
