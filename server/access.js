@@ -13,6 +13,7 @@ export function createAccessStore(db) {
     CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS project_members (project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('viewer','editor')), PRIMARY KEY(project_id,user_id));
     CREATE TABLE IF NOT EXISTS project_invitations (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, email TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('viewer','editor')), token_hash TEXT UNIQUE NOT NULL, expires_at INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(project_id,email));
+    CREATE TABLE IF NOT EXISTS project_email_grants (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, email TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('viewer','editor')), created_at TEXT NOT NULL, UNIQUE(project_id,email));
     CREATE TABLE IF NOT EXISTS project_shares (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, token_hash TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL);
   `);
   if (
@@ -84,6 +85,20 @@ export function createAccessStore(db) {
               "INSERT INTO project_members(project_id,user_id,role) VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role",
             ).run(inv.project_id, id, inv.role);
           db.prepare("DELETE FROM project_invitations WHERE id=?").run(inv.id);
+        }
+        // Only called after Google has verified this identity's email. Durable
+        // grants need no acceptance link and do not expire before first login.
+        const grants = db
+          .prepare("SELECT * FROM project_email_grants WHERE email=?")
+          .all(email);
+        for (const grant of grants) {
+          if (project(grant.project_id)?.owner_id !== id)
+            db.prepare(
+              "INSERT INTO project_members VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role",
+            ).run(grant.project_id, id, grant.role);
+          db.prepare("DELETE FROM project_email_grants WHERE id=?").run(
+            grant.id,
+          );
         }
         return getUser(id);
       })();

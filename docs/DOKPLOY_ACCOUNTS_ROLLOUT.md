@@ -48,9 +48,13 @@ This assigns **all currently unowned legacy diagrams** to a new private project.
 
 The claim tool is not an HTTP endpoint and cannot be invoked by an ordinary user. Browser-local original exports, if any, remain untouched; use the editor's existing import workflow to add them to an authorized project.
 
-## Invitations and roles
+## Direct access and roles
 
-Owners create an invitation for a verified email and either `viewer` or `editor`. The UI provides a copyable acceptance URL. No SMTP provider is configured and the application does **not** email the recipient automatically. The owner sends the link through their preferred channel. On Google login, matching unexpired pending invitations become memberships. Existing signed-in users can follow the invitation link or sign in again to refresh membership.
+Owners grant `viewer` or `editor` access to one or up to 100 Google email addresses at once. Permissions apply to the whole project, not just the linked diagram. Input is normalized/deduplicated and the entire batch is rejected if invalid or if an email maps to ambiguous historical identities; no partial grants occur.
+
+Existing accounts gain membership immediately, including already signed-in users: refreshing the project list is enough. For an address without an account, a durable pending email grant is bound only after a matching verified Google login. The site's existing allowed-account policy still applies. Pending grants can be changed or revoked before login. If login consumes a pending grant while the owner is viewing it, a stale revoke/change reports an error and reloads current memberships rather than falsely reporting success.
+
+Normal project/diagram links are optional shortcuts, not access tokens. No SMTP provider is required and no email is sent. Legacy invitation URLs remain supported until expiration or replacement; new direct grants replace stale legacy invitations for that email. Revoking or changing membership cancels pending access so a later login cannot restore old privileges. Public read-only capability links remain separate.
 
 Owners manage membership and public links. Editors can edit project diagrams. Viewers and anonymous link recipients cannot save document changes or acquire edit locks. Membership and public-link revocation are checked by the server, not merely by disabled controls.
 

@@ -71,9 +71,12 @@ The Compose configuration persists the database in the `drawdb-data` volume.
 
 This fork stores diagrams centrally in SQLite and now scopes them to private
 projects. Sign in with Google to see owned projects and projects shared with
-your verified email. Owners manage invitations with editor/viewer roles and
-can generate revocable public **read-only** links. Invitation links are copied
-and sent manually; no email provider is required or silently used.
+your verified email. Owners grant editor/viewer access to up to 100 emails at
+once. Existing accounts receive access immediately; new accounts receive it
+on their first matching verified Google login. No invitation acceptance or
+link is required: refresh “Shared with me” to discover projects. The optional
+private project/diagram link does not itself grant access. Owners can also
+generate separate revocable public **read-only** links. No email is sent.
 
 The application layer authenticates both REST requests and WebSocket sessions.
 Editors retain realtime editing, participant presence, table locks, and

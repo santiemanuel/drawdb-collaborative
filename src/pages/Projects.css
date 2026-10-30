@@ -99,6 +99,7 @@
   color: #b91c1c;
 }
 .project-shell input,
+.project-shell textarea,
 .project-shell select {
   border: 1px solid var(--semi-color-border, #d4d4d8);
   border-radius: 8px;
@@ -109,6 +110,7 @@
   font-size: 14px;
 }
 .project-shell input:focus,
+.project-shell textarea:focus,
 .project-shell select:focus,
 .project-shell button:focus-visible {
   outline: 2px solid #6366f1;
@@ -333,4 +335,14 @@
   .project-people li {
     flex-wrap: wrap;
   }
+}
+
+.project-shell textarea {
+  resize: vertical;
+  min-height: 88px;
+}
+.project-link-target {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
 }

@@ -42,11 +42,19 @@ export const projectApi = {
     ),
   invitations: (id) =>
     apiRequest(`/api/projects/${encodeURIComponent(id)}/invitations`),
-  invite: (id, email, role) =>
-    apiRequest(`/api/projects/${encodeURIComponent(id)}/invitations`, {
+  grantAccess: (id, emails, role) =>
+    apiRequest(`/api/projects/${encodeURIComponent(id)}/access`, {
       method: "POST",
-      body: JSON.stringify({ email, role }),
+      body: JSON.stringify({ emails, role }),
     }),
+  changeInvitation: (id, invitationId, role) =>
+    apiRequest(
+      `/api/projects/${encodeURIComponent(id)}/invitations/${encodeURIComponent(invitationId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ role }),
+      },
+    ),
   revokeInvitation: (id, invitationId) =>
     apiRequest(
       `/api/projects/${encodeURIComponent(id)}/invitations/${encodeURIComponent(invitationId)}`,

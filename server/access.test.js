@@ -532,3 +532,249 @@ test("production requires explicit HTTPS APP_URL before opening the database", a
     else process.env.APP_URL = saved;
   }
 });
+
+test("direct access grants existing sessions immediately and atomically validates bulk recipients", async (t) => {
+  const f = await fixture(t);
+  const path = `/api/projects/${f.project.id}/access`;
+  const grant = (emails, role = "viewer", user = f.owner) =>
+    f.request(path, {
+      method: "POST",
+      user,
+      body: JSON.stringify({ emails, role }),
+    });
+  for (const user of [f.viewer, f.editor, f.stranger, null])
+    assert.ok(
+      [401, 403, 404].includes(
+        (await grant(["other@example.com"], "editor", user)).status,
+      ),
+    );
+  for (const emails of [
+    [],
+    ["valid@example.com", "bad"],
+    ["owner@example.com", "valid@example.com"],
+    Array(101).fill("valid@example.com"),
+    [null],
+  ])
+    assert.equal((await grant(emails)).status, 400);
+  assert.equal(
+    f.database.prepare("SELECT count(*) AS n FROM project_email_grants").get()
+      .n,
+    0,
+  );
+  const response = await grant(
+    [" STRANGER@example.com ", "stranger@example.com", "future@example.com"],
+    "editor",
+  );
+  assert.equal(response.status, 201);
+  const data = await response.json();
+  assert.equal(data.grants.length, 2);
+  assert.equal(data.acceptUrl, undefined);
+  assert.equal(data.projectUrl, `${origin}/projects/${f.project.id}`);
+  assert.equal(f.access.role(f.project.id, f.stranger.id), "editor");
+  const list = await (
+    await f.request("/api/projects", { user: f.stranger })
+  ).json();
+  assert.equal(list.projects.find((p) => p.id === f.project.id).role, "editor");
+  assert.equal(
+    (await f.request("/api/diagrams/test-diagram", { user: f.stranger }))
+      .status,
+    200,
+  );
+  const duplicate = f.access.upsertGoogle({
+    sub: "duplicate",
+    email: f.stranger.email,
+    name: "duplicate",
+  });
+  assert.notEqual(duplicate.id, f.stranger.id);
+  assert.equal(
+    (await grant(["untouched@example.com", f.stranger.email])).status,
+    409,
+  );
+  assert.equal(
+    f.database
+      .prepare(
+        "SELECT 1 FROM project_email_grants WHERE email='untouched@example.com'",
+      )
+      .get(),
+    undefined,
+  );
+  assert.equal(f.access.role(f.project.id, f.owner.id), "owner");
+});
+
+test("durable email grants bind on matching login, support downgrade and revoke without acceptance", async (t) => {
+  const f = await fixture(t);
+  const base = `/api/projects/${f.project.id}`;
+  const grant = (email, role = "editor") =>
+    f.request(`${base}/access`, {
+      method: "POST",
+      user: f.owner,
+      body: JSON.stringify({ emails: [email], role }),
+    });
+  await grant("future@example.com");
+  await grant("revoked@example.com");
+  const pending = (
+    await (await f.request(`${base}/invitations`, { user: f.owner })).json()
+  ).invitations;
+  assert.equal(pending.length, 2);
+  assert.ok(pending.every((i) => i.expires_at === null));
+  const future = pending.find((i) => i.email === "future@example.com");
+  assert.equal(
+    (
+      await f.request(`${base}/invitations/${future.id}`, {
+        method: "PATCH",
+        user: f.editor,
+        body: JSON.stringify({ role: "viewer" }),
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.request(`${base}/invitations/${future.id}`, {
+        method: "PATCH",
+        user: f.owner,
+        body: JSON.stringify({ role: "viewer" }),
+      })
+    ).status,
+    204,
+  );
+  const revoked = pending.find((i) => i.email === "revoked@example.com");
+  await f.request(`${base}/invitations/${revoked.id}`, {
+    method: "DELETE",
+    user: f.owner,
+  });
+  const other = f.access.upsertGoogle({
+    sub: "other",
+    email: "other@example.com",
+    name: "Other",
+  });
+  assert.equal(f.access.role(f.project.id, other.id), null);
+  const newUser = f.access.upsertGoogle({
+    sub: "future",
+    email: "FUTURE@example.com",
+    name: "Future",
+  });
+  assert.equal(f.access.role(f.project.id, newUser.id), "viewer");
+  assert.equal(f.access.listProjects(newUser.id).length, 1);
+  const revokedUser = f.access.upsertGoogle({
+    sub: "revoked",
+    email: "revoked@example.com",
+    name: "Revoked",
+  });
+  assert.equal(f.access.role(f.project.id, revokedUser.id), null);
+  assert.equal(
+    f.database.prepare("SELECT count(*) AS n FROM project_email_grants").get()
+      .n,
+    0,
+  );
+  await f.request(`${base}/members/${newUser.id}`, {
+    method: "DELETE",
+    user: f.owner,
+  });
+  f.access.upsertGoogle({
+    sub: "future",
+    email: "future@example.com",
+    name: "Future",
+  });
+  assert.equal(f.access.role(f.project.id, newUser.id), null);
+});
+
+test("new grants supersede stale legacy invitations and role changes cannot regrant access", async (t) => {
+  const f = await fixture(t);
+  const base = `/api/projects/${f.project.id}`;
+  const legacy = await (
+    await f.request(`${base}/invitations`, {
+      method: "POST",
+      user: f.owner,
+      body: JSON.stringify({ email: f.stranger.email, role: "editor" }),
+    })
+  ).json();
+  await f.request(`${base}/access`, {
+    method: "POST",
+    user: f.owner,
+    body: JSON.stringify({ emails: [f.stranger.email], role: "viewer" }),
+  });
+  const token = legacy.acceptUrl.split("/").pop();
+  assert.equal(
+    (
+      await f.request(`/api/invitations/${token}/accept`, {
+        method: "POST",
+        user: f.stranger,
+      })
+    ).status,
+    404,
+  );
+  assert.equal(f.access.role(f.project.id, f.stranger.id), "viewer");
+  await f.request(`${base}/access`, {
+    method: "POST",
+    user: f.owner,
+    body: JSON.stringify({ emails: [f.stranger.email], role: "editor" }),
+  });
+  await f.request(`${base}/members/${f.stranger.id}`, {
+    method: "PATCH",
+    user: f.owner,
+    body: JSON.stringify({ role: "viewer" }),
+  });
+  f.access.upsertGoogle({
+    sub: "stranger",
+    email: f.stranger.email,
+    name: "Stranger",
+  });
+  assert.equal(f.access.role(f.project.id, f.stranger.id), "viewer");
+  await f.request(`${base}/members/${f.stranger.id}`, {
+    method: "DELETE",
+    user: f.owner,
+  });
+  f.access.upsertGoogle({
+    sub: "stranger",
+    email: f.stranger.email,
+    name: "Stranger",
+  });
+  assert.equal(f.access.role(f.project.id, f.stranger.id), null);
+});
+
+test("a consumed pending grant cannot falsely report successful revocation", async (t) => {
+  const f = await fixture(t);
+  const base = `/api/projects/${f.project.id}`;
+  await f.request(`${base}/access`, {
+    method: "POST",
+    user: f.owner,
+    body: JSON.stringify({ emails: ["race@example.com"], role: "editor" }),
+  });
+  const pending = (
+    await (await f.request(`${base}/invitations`, { user: f.owner })).json()
+  ).invitations[0];
+  const user = f.access.upsertGoogle({
+    sub: "race",
+    email: "race@example.com",
+    name: "Race",
+  });
+  assert.equal(
+    (
+      await f.request(`${base}/invitations/${pending.id}`, {
+        method: "DELETE",
+        user: f.owner,
+      })
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await f.request(`${base}/invitations/${pending.id}`, {
+        method: "PATCH",
+        user: f.owner,
+        body: JSON.stringify({ role: "viewer" }),
+      })
+    ).status,
+    404,
+  );
+  const members = (
+    await (await f.request(`${base}/members`, { user: f.owner })).json()
+  ).members;
+  assert.ok(members.some((m) => m.id === user.id));
+  await f.request(`${base}/members/${user.id}`, {
+    method: "DELETE",
+    user: f.owner,
+  });
+  assert.equal(f.access.role(f.project.id, user.id), null);
+});

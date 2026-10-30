@@ -159,7 +159,9 @@ export default function Projects() {
         </button>
       </form>
       <ErrorNotice message={error} />
-      {error && <button onClick={load}>Reintentar</button>}
+      <button onClick={load} disabled={pending}>
+        {pending ? "Actualizando…" : "Actualizar proyectos"}
+      </button>
       {pending ? (
         <p role="status">Cargando proyectos…</p>
       ) : (
@@ -175,7 +177,7 @@ export default function Projects() {
                 <p className="project-empty">
                   {owned
                     ? "Creá tu primer proyecto para empezar."
-                    : "Los proyectos a los que te inviten aparecerán aquí."}
+                    : "Los proyectos que compartan con tu cuenta aparecerán aquí, sin aceptar invitaciones."}
                 </p>
               ) : (
                 <div className="project-grid">
@@ -233,7 +235,7 @@ function ProjectDetailContent() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("viewer");
-  const [inviteUrl, setInviteUrl] = useState("");
+  const [linkTarget, setLinkTarget] = useState("");
   const load = useCallback(async () => {
     const epoch = ++requestEpoch.current;
     setPending(true);
@@ -265,7 +267,7 @@ function ProjectDetailContent() {
   useEffect(() => {
     setData(null);
     setShare(null);
-    setInviteUrl("");
+    setLinkTarget("");
     setMembers([]);
     setInvitations([]);
     setNotice("");
@@ -281,6 +283,7 @@ function ProjectDetailContent() {
       setNotice(success);
       await load();
     } catch (e) {
+      if (e.status === 404) await load();
       setError(e.message);
     } finally {
       setBusy(false);
@@ -297,6 +300,7 @@ function ProjectDetailContent() {
   if (!isPublic && (loading || !user)) return <LoginRequired />;
   const owner = !isPublic && data?.project.role === "owner";
   const canEdit = !isPublic && ["owner", "editor"].includes(data?.project.role);
+  const privateLink = `${window.location.origin}${linkTarget && data?.diagrams.some((d) => d.id === linkTarget) ? `/diagrams/${encodeURIComponent(linkTarget)}` : `/projects/${encodeURIComponent(id)}`}`;
   const shareUrl =
     share?.url ||
     (share?.token ? `${window.location.origin}/shared/${share.token}` : "");
@@ -399,30 +403,51 @@ function ProjectDetailContent() {
           {owner && (
             <div className="project-settings">
               <section className="project-panel">
-                <h2>Equipo</h2>
+                <h2>Acceso al proyecto</h2>
                 <p>
-                  Invitá por correo y compartí el enlace. La persona debe entrar
-                  con esa misma cuenta de Google.
+                  Agregá uno o varios correos de Google para darles acceso a
+                  todos los diagramas de este proyecto. Aparecerá en
+                  «Compartidos conmigo» al entrar con esa cuenta, sin aceptar
+                  invitaciones ni recibir un enlace. Se mantiene la lista de
+                  cuentas autorizadas para ingresar al sitio.
                 </p>
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
+                    const emails = [
+                      ...new Set(
+                        email
+                          .split(/[,;\n]+/)
+                          .map((value) => value.trim().toLowerCase())
+                          .filter(Boolean),
+                      ),
+                    ];
                     act(async () => {
-                      const result = await projectApi.invite(id, email, role);
-                      setInviteUrl(result.acceptUrl);
+                      await projectApi.grantAccess(id, emails, role);
                       setEmail("");
-                    }, "Invitación preparada. Copiá el enlace y envialo a esa persona.");
+                      if (data.diagrams.length === 1)
+                        setLinkTarget(data.diagrams[0].id);
+                    }, "Acceso otorgado. Ya no hace falta enviar ni aceptar invitaciones. Si la persona está en la página, puede actualizar sus proyectos.");
                   }}
                 >
-                  <label htmlFor="invite-email">Correo de Google</label>
-                  <input
+                  <label htmlFor="invite-email">Correos de Google</label>
+                  <textarea
                     id="invite-email"
-                    type="email"
                     required
+                    rows={3}
+                    maxLength={26000}
+                    aria-describedby="invite-email-help"
+                    placeholder="persona@ejemplo.com, otra@ejemplo.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                   />
-                  <label htmlFor="invite-role">Permiso</label>
+                  <small id="invite-email-help">
+                    Separalos con comas, punto y coma o saltos de línea. Hasta
+                    100 correos por vez.
+                  </small>
+                  <label htmlFor="invite-role">
+                    Permiso para todo el proyecto
+                  </label>
                   <select
                     id="invite-role"
                     value={role}
@@ -431,20 +456,44 @@ function ProjectDetailContent() {
                     <option value="viewer">Solo lectura</option>
                     <option value="editor">Edición</option>
                   </select>
-                  <button disabled={busy}>Crear invitación</button>
+                  <button disabled={busy || !email.trim()}>
+                    Otorgar acceso
+                  </button>
                 </form>
-                {inviteUrl && (
-                  <div className="project-link">
-                    <input
-                      aria-label="Enlace de invitación"
-                      readOnly
-                      value={inviteUrl}
-                    />
-                    <button onClick={() => copy(inviteUrl)}>
-                      Copiar enlace
-                    </button>
-                  </div>
-                )}
+                <h3>Enlace opcional</h3>
+                <p>
+                  Este enlace no concede permisos: solo abre el proyecto o el
+                  diagrama para quienes ya tienen acceso.
+                </p>
+                <label htmlFor="private-link-target">Qué querés enlazar</label>
+                <select
+                  id="private-link-target"
+                  className="project-link-target"
+                  value={
+                    data.diagrams.some((d) => d.id === linkTarget)
+                      ? linkTarget
+                      : ""
+                  }
+                  onChange={(e) => setLinkTarget(e.target.value)}
+                >
+                  <option value="">Todo el proyecto</option>
+                  {data.diagrams.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="project-link">
+                  <input
+                    aria-label="Enlace privado opcional"
+                    readOnly
+                    value={privateLink}
+                  />
+                  <button onClick={() => copy(privateLink)}>
+                    Copiar enlace
+                  </button>
+                </div>
+                <h3>Personas con acceso</h3>
                 <ul className="project-people">
                   {members.map((m) => (
                     <li key={m.user_id || m.id}>
@@ -496,13 +545,40 @@ function ProjectDetailContent() {
                 </ul>
                 {invitations.length > 0 && (
                   <>
-                    <h3>Invitaciones pendientes</h3>
+                    <h3>Accesos pendientes de vincular</h3>
+                    <p>
+                      El acceso se vinculará al iniciar sesión con ese correo de
+                      Google verificado.
+                    </p>
                     <ul className="project-people">
                       {invitations.map((i) => (
                         <li key={i.id}>
-                          <span>
-                            {i.email} · {roleLabel[i.role]}
-                          </span>
+                          <div>
+                            <strong>{i.email}</strong>
+                            {i.expires_at && (
+                              <small>
+                                Invitación anterior · vence{" "}
+                                {new Date(i.expires_at).toLocaleDateString()}
+                              </small>
+                            )}
+                          </div>
+                          <select
+                            aria-label={`Permiso de ${i.email}`}
+                            value={i.role}
+                            disabled={busy}
+                            onChange={(e) =>
+                              act(() =>
+                                projectApi.changeInvitation(
+                                  id,
+                                  i.id,
+                                  e.target.value,
+                                ),
+                              )
+                            }
+                          >
+                            <option value="viewer">Solo lectura</option>
+                            <option value="editor">Edición</option>
+                          </select>
                           <button
                             disabled={busy}
                             onClick={() =>

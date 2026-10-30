@@ -87,6 +87,9 @@ export function mountProjects(app, access, auth, store) {
       db.prepare(
         "DELETE FROM project_invitations WHERE project_id=? AND email=(SELECT email FROM users WHERE id=?)",
       ).run(req.params.projectId, req.params.userId);
+      db.prepare(
+        "DELETE FROM project_email_grants WHERE project_id=? AND email=(SELECT email FROM users WHERE id=?)",
+      ).run(req.params.projectId, req.params.userId);
       res.status(204).end();
     },
   );
@@ -100,6 +103,9 @@ export function mountProjects(app, access, auth, store) {
       db.prepare(
         "DELETE FROM project_invitations WHERE project_id=? AND email=(SELECT email FROM users WHERE id=?)",
       ).run(req.params.projectId, req.params.userId);
+      db.prepare(
+        "DELETE FROM project_email_grants WHERE project_id=? AND email=(SELECT email FROM users WHERE id=?)",
+      ).run(req.params.projectId, req.params.userId);
       res.status(204).end();
     },
   );
@@ -107,10 +113,110 @@ export function mountProjects(app, access, auth, store) {
     res.json({
       invitations: db
         .prepare(
-          "SELECT id,email,role,expires_at,created_at FROM project_invitations WHERE project_id=? AND expires_at>?",
+          `
+        SELECT id,email,role,expires_at,created_at FROM project_invitations WHERE project_id=? AND expires_at>?
+        UNION ALL SELECT id,email,role,NULL AS expires_at,created_at FROM project_email_grants WHERE project_id=?
+      `,
         )
-        .all(req.params.projectId, Date.now()),
+        .all(req.params.projectId, Date.now(), req.params.projectId),
     }),
+  );
+  // Authorize every recipient before writing anything: malformed bulk requests
+  // and ambiguous historical identities cannot leave a partially shared project.
+  app.post("/api/projects/:projectId/access", ...manage, (req, res) => {
+    const input = req.body.emails;
+    if (
+      !Array.isArray(input) ||
+      input.length < 1 ||
+      input.length > 100 ||
+      !validRole(req.body.role) ||
+      input.some(
+        (email) =>
+          typeof email !== "string" ||
+          email.trim().length > 254 ||
+          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()),
+      )
+    )
+      return res.status(400).json({
+        error:
+          "Ingresá entre 1 y 100 correos válidos y un permiso de lectura o edición.",
+      });
+    const emails = [...new Set(input.map(normalizeEmail))];
+    if (emails.includes(req.user.email))
+      return res.status(400).json({
+        error: "El propietario ya tiene acceso y no puede cambiar su permiso.",
+      });
+    const recipients = emails.map((email) => ({
+      email,
+      users: db.prepare("SELECT id FROM users WHERE email=?").all(email),
+    }));
+    if (recipients.some(({ users }) => users.length > 1))
+      return res.status(409).json({
+        error:
+          "Un correo corresponde a más de una identidad. No se modificó ningún permiso; contactá al administrador.",
+      });
+    const grants = db.transaction(() =>
+      recipients.map(({ email, users }) => {
+        db.prepare(
+          "DELETE FROM project_invitations WHERE project_id=? AND email=?",
+        ).run(req.params.projectId, email);
+        db.prepare(
+          "DELETE FROM project_email_grants WHERE project_id=? AND email=?",
+        ).run(req.params.projectId, email);
+        if (users.length) {
+          db.prepare(
+            "INSERT INTO project_members VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role",
+          ).run(req.params.projectId, users[0].id, req.body.role);
+        } else {
+          db.prepare("INSERT INTO project_email_grants VALUES(?,?,?,?,?)").run(
+            crypto.randomUUID(),
+            req.params.projectId,
+            email,
+            req.body.role,
+            new Date().toISOString(),
+          );
+        }
+        return {
+          email,
+          role: req.body.role,
+          status: users.length ? "active" : "awaiting_login",
+        };
+      }),
+    )();
+    res.status(201).json({
+      grants,
+      projectId: req.params.projectId,
+      projectUrl: `${auth.origin}/projects/${req.params.projectId}`,
+    });
+  });
+  app.patch(
+    "/api/projects/:projectId/invitations/:invitationId",
+    ...manage,
+    (req, res) => {
+      if (!validRole(req.body.role))
+        return res.status(400).json({ error: "Invalid role" });
+      const changes = db.transaction(() => {
+        const pending = db
+          .prepare(
+            "UPDATE project_email_grants SET role=? WHERE project_id=? AND id=?",
+          )
+          .run(req.body.role, req.params.projectId, req.params.invitationId);
+        const legacy = db
+          .prepare(
+            "UPDATE project_invitations SET role=? WHERE project_id=? AND id=? AND expires_at>?",
+          )
+          .run(
+            req.body.role,
+            req.params.projectId,
+            req.params.invitationId,
+            Date.now(),
+          );
+        return pending.changes + legacy.changes;
+      })();
+      if (!changes)
+        return res.status(404).json({ error: "Pending access not found" });
+      res.status(204).end();
+    },
   );
   app.post("/api/projects/:projectId/invitations", ...manage, (req, res) => {
     if (
@@ -125,6 +231,9 @@ export function mountProjects(app, access, auth, store) {
     const email = normalizeEmail(req.body.email);
     if (email === req.user.email)
       return res.status(400).json({ error: "You already own this project" });
+    db.prepare(
+      "DELETE FROM project_email_grants WHERE project_id=? AND email=?",
+    ).run(req.params.projectId, email);
     const raw = token(),
       id = crypto.randomUUID(),
       expires = Date.now() + 7 * 86400000,
@@ -149,9 +258,24 @@ export function mountProjects(app, access, auth, store) {
     "/api/projects/:projectId/invitations/:invitationId",
     ...manage,
     (req, res) => {
-      db.prepare(
-        "DELETE FROM project_invitations WHERE project_id=? AND id=?",
-      ).run(req.params.projectId, req.params.invitationId);
+      const changes = db.transaction(() => {
+        const legacy = db
+          .prepare(
+            "DELETE FROM project_invitations WHERE project_id=? AND id=?",
+          )
+          .run(req.params.projectId, req.params.invitationId);
+        const pending = db
+          .prepare(
+            "DELETE FROM project_email_grants WHERE project_id=? AND id=?",
+          )
+          .run(req.params.projectId, req.params.invitationId);
+        return legacy.changes + pending.changes;
+      })();
+      if (!changes)
+        return res.status(404).json({
+          error:
+            "El acceso pendiente cambió. Revisá la lista actualizada de personas con acceso antes de revocarlo.",
+        });
       res.status(204).end();
     },
   );
